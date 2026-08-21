@@ -1,0 +1,5 @@
+--- BASELINE/go.mod
++++ MODIFIED/go.mod
+@@
+-module github.com/serenox/serenox-go
++module github.com/nihmadev/Serenox

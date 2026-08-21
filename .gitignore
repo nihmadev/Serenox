@@ -1,0 +1,20 @@
+# Local build and tool caches
+.cache/
+.tools/
+bin/
+
+# Runtime state and credentials
+config.json
+data/
+*.session
+*.session.json
+
+# Python sidecar environment/cache
+sidecar/python/.venv/
+sidecar/python/.pytest_cache/
+sidecar/python/**/__pycache__/
+*.py[cod]
+
+# Temporary package/build output
+*.srnx
+*.tmp

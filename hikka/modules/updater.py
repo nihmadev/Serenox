@@ -1,0 +1,210 @@
+# ©️ Dan Gazizullin, 2021-2023
+# This file is a part of Hikka Userbot
+# 🌐 https://github.com/hikariatama/Hikka
+# You can redistribute it and/or modify it under the terms of the GNU AGPLv3
+# 🔑 https://www.gnu.org/licenses/agpl-3.0.html
+
+import asyncio
+import contextlib
+import logging
+import os
+import subprocess
+import sys
+import time
+
+from pyrogram.types import Message
+
+from .. import loader, utils
+from .._internal import restart
+from ..inline.types import InlineCall
+
+logger = logging.getLogger(__name__)
+
+
+@loader.tds
+class UpdaterMod(loader.Module):
+    """Updates itself"""
+
+    strings = {"name": "Updater"}
+
+    def __init__(self) -> None:
+        self.config = loader.ModuleConfig(
+            loader.ConfigValue(
+                "GIT_ORIGIN_URL",
+                "https://github.com/penggrin12/Hikkaduwa",
+                lambda: self.get_string("origin_cfg_doc"),
+                validator=loader.validators.Link(),
+            )
+        )
+
+    @loader.command()
+    async def restart(self, message: Message) -> None:
+        args = utils.get_args_raw(message)
+        secure_boot = any(trigger in args for trigger in {"--secure-boot", "-sb"})
+        try:
+            if (
+                "-f" in args
+                or not self.inline.init_complete
+                or not await self.inline.form(
+                    message=message,
+                    text=self.get_string(
+                        "secure_boot_confirm" if secure_boot else "restart_confirm"
+                    ),
+                    reply_markup=[
+                        {
+                            "text": self.get_string("btn_restart"),
+                            "callback": self.inline_restart,
+                            "args": (secure_boot,),
+                        },
+                        {"text": self.get_string("cancel"), "action": "close"},
+                    ],
+                )
+            ):
+                raise
+        except Exception:
+            await self.restart_common(message, secure_boot)
+
+    async def inline_restart(self, call: InlineCall, secure_boot: bool = False) -> None:
+        await self.restart_common(call, secure_boot=secure_boot)
+
+    async def process_restart_message(self, msg_obj: InlineCall | Message) -> None:
+        self.set(
+            "selfupdatemsg",
+            (
+                msg_obj.inline_message_id
+                if hasattr(msg_obj, "inline_message_id")
+                else f"{utils.get_chat_id_keep_minus100(msg_obj)}:{msg_obj.id}"
+            ),
+        )
+
+    async def restart_common(
+        self,
+        msg_obj: InlineCall | Message,
+        secure_boot: bool = False,
+    ) -> None:
+        if (
+            hasattr(msg_obj, "form")
+            and isinstance(msg_obj.form, dict)
+            and "uid" in msg_obj.form
+            and msg_obj.form["uid"] in self.inline._units
+            and "message" in self.inline._units[msg_obj.form["uid"]]
+        ):
+            message = self.inline._units[msg_obj.form["uid"]]["message"]
+        else:
+            message = msg_obj
+
+        if secure_boot:
+            self._db.set(loader.__name__, "secure_boot", True)
+
+        msg_obj = await utils.answer(
+            msg_obj,
+            self.get_string("restarting_caption"),
+        )
+
+        await self.process_restart_message(msg_obj)
+
+        self.set("restart_ts", time.time())
+
+        await self._db.remote_force_save()
+
+        handler = logging.getLogger().handlers[0]
+        handler.setLevel(logging.CRITICAL)
+
+        await message._client.terminate()
+        restart()
+
+    @loader.command()
+    async def source(self, message: Message) -> None:
+        await utils.answer(
+            message,
+            self.get_string("source").format(self.config["GIT_ORIGIN_URL"]),
+        )
+
+    async def client_ready(self) -> None:
+        if self.get("do_not_create", False):
+            return
+
+        try:
+            await self._add_folder()
+        except Exception:
+            logger.exception("Failed to add folder!")
+
+        self.set("do_not_create", True)
+
+    async def _add_folder(self) -> None:
+        folders = await self.client.get_folders()
+
+        if any(folder.name == "hikka" for folder in folders):
+            return
+
+        bot_id_list: list[int | str] = (
+            [self.client.loader.inline.bot_id]
+            if self.client.loader.inline.init_complete
+            else []
+        )
+
+        try:
+            await self.client.create_folder(
+                name="hikka",
+                icon="🐱",
+                pinned_chats=bot_id_list,
+                included_chats=(
+                    bot_id_list
+                    + [
+                        x.chat.id
+                        async for x in self.client.get_dialogs()
+                        if x.chat.id
+                        and x.chat.title
+                        in {
+                            "hikka-logs",
+                            "hikka-onload",
+                            "hikka-assets",
+                            "hikka-backups",
+                            "hikka-acc-switcher",
+                            "silent-tags",
+                        }
+                    ]
+                ),
+            )
+        except Exception:
+            logger.critical(
+                "Can't create Hikkaduwa folder. Possible reasons are:\n"
+                "- User reached the limit of folders in Telegram\n"
+                "- User got floodwait\n"
+                "Ignoring error and adding folder addition to ignore list"
+            )
+
+    async def full_restart_complete(self, secure_boot: bool = False) -> None:
+        logger.debug("im complete, dawg")
+
+        start = self.get("restart_ts")
+
+        try:
+            took = round(time.time() - start)
+        except Exception:
+            took = "n/a"
+
+        self.set("restart_ts", None)
+
+        ms = self.get("selfupdatemsg")
+        msg = self.get_string(
+            "secure_boot_complete" if secure_boot else "success"
+        ).format(took)
+
+        if ms is None:
+            return
+
+        self.set("selfupdatemsg", None)
+
+        if ":" in str(ms):
+            chat_id, message_id = ms.split(":")
+            chat_id, message_id = int(chat_id), int(message_id)
+            await self.client.edit_message_text(chat_id, message_id, msg)
+            await asyncio.sleep(60)
+            await self.client.delete_messages(chat_id, message_id)
+            return
+
+        await self.inline.bot.edit_message_text(
+            inline_message_id=ms,
+            text=self.inline.sanitise_text(msg),
+        )

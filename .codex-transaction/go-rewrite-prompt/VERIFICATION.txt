@@ -1,0 +1,33 @@
+CHANGED_BRANCH_FIELD
+branch: master (unborn)
+field: GO_REWRITE_AGENT_PROMPT.md created with Go rewrite instructions, isolated serenox-go/ output, Python sidecar compatibility, contributor formatting, syntax checking, linting, tests, race checks, and CI requirements
+
+ARTIFACTS
+MODIFIED_FILE: /home/nihmadev/Serenox/GO_REWRITE_AGENT_PROMPT.md
+DIFF_FILE: /home/nihmadev/Serenox/.codex-transaction/go-rewrite-prompt/DIFF_FILE.diff
+VERIFICATION.txt: /home/nihmadev/Serenox/.codex-transaction/go-rewrite-prompt/VERIFICATION.txt
+ROLLBACK.sh: /home/nihmadev/Serenox/.codex-transaction/go-rewrite-prompt/ROLLBACK.sh
+
+HASHES
+original state: absent
+original absent SHA-256 (/dev/null): e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+modified SHA-256: 2bd1b56e42f924ab7ccbc12e83a7748611fac1204ed69a5800cebdfaa54d7dc2
+
+BASELINE
+command: test ! -e /home/nihmadev/Serenox/GO_REWRITE_AGENT_PROMPT.md && printf 'ABSENT\n'
+input: /home/nihmadev/Serenox/GO_REWRITE_AGENT_PROMPT.md
+literal output/result: ABSENT
+exit status: 0
+
+MODIFIED
+command: python3 prompt structure validator
+input: /home/nihmadev/Serenox/GO_REWRITE_AGENT_PROMPT.md; required markers were title, serenox-go/, gofmt, goimports, go vet, staticcheck, golangci-lint, Ruff, python -m compileall, make check, and Begin now.; fenced-code delimiter count was required to be even
+literal output/result: PROMPT_OK lines=120 bytes=6159
+exit status: 0
+
+ROLLBACK
+command: /home/nihmadev/Serenox/.codex-transaction/go-rewrite-prompt/ROLLBACK.sh /home/nihmadev/Serenox/.codex-transaction/go-rewrite-prompt/rollback-test.md
+input: an exact copy of /home/nihmadev/Serenox/GO_REWRITE_AGENT_PROMPT.md at /home/nihmadev/Serenox/.codex-transaction/go-rewrite-prompt/rollback-test.md
+literal output/result: REMOVED:/home/nihmadev/Serenox/.codex-transaction/go-rewrite-prompt/rollback-test.md
+exit status: 0
+restored behavior/status: test copy returned to the original absent state; literal check output was RESTORED_STATE=ABSENT; restored-state check exit status was 0; MODIFIED_FILE remains present and changed

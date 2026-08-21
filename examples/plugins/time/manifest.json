@@ -1,0 +1,30 @@
+{
+  "format": "serenox.plugin.package/v1",
+  "id": "example.time",
+  "name": "Time",
+  "version": "1.0.0",
+  "description": "Replies with the current UTC time",
+  "category": "go-executable",
+  "protocol": {
+    "min": "1.0",
+    "max_exclusive": "2.0"
+  },
+  "core": {
+    "min": "0.1.0",
+    "max_exclusive": "1.0.0"
+  },
+  "entrypoints": [
+    {
+      "os": "linux",
+      "arch": "amd64",
+      "path": "bin/time-plugin"
+    }
+  ],
+  "capabilities": [
+    "commands"
+  ],
+  "permissions": [
+    "telegram.reply"
+  ],
+  "files": []
+}

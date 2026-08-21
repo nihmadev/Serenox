@@ -1,0 +1,30 @@
+{
+  "format": "serenox.plugin.package/v1",
+  "id": "example.echo",
+  "name": "Echo",
+  "version": "1.0.0",
+  "description": "Replies with the command arguments",
+  "category": "go-executable",
+  "protocol": {
+    "min": "1.0",
+    "max_exclusive": "2.0"
+  },
+  "core": {
+    "min": "0.1.0",
+    "max_exclusive": "1.0.0"
+  },
+  "entrypoints": [
+    {
+      "os": "linux",
+      "arch": "amd64",
+      "path": "bin/echo"
+    }
+  ],
+  "capabilities": [
+    "commands"
+  ],
+  "permissions": [
+    "telegram.reply"
+  ],
+  "files": []
+}

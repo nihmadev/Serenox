@@ -1,0 +1,76 @@
+# ©️ Dan Gazizullin, 2021-2023
+# This file is a part of Hikka Userbot
+# 🌐 https://github.com/hikariatama/Hikka
+# You can redistribute it and/or modify it under the terms of the GNU AGPLv3
+# 🔑 https://www.gnu.org/licenses/agpl-3.0.html
+
+import logging
+import typing
+
+from .types import InlineUnit
+
+logger = logging.getLogger(__name__)
+
+
+# TODO: unused?
+class InlineBotPM(InlineUnit):
+    def set_fsm_state(
+        self,
+        user: str | int,
+        state: str | bool,
+    ) -> bool:
+        """
+        Set FSM state for user
+        :param user: user id
+        :param state: state to set
+        :return: True if state was set, False otherwise
+        :rtype: bool
+        """
+        if not isinstance(user, (str, int)):
+            logger.error(
+                (
+                    "Invalid type for `user` in `set_fsm_state`. Expected `str` or"
+                    " `int`, got %s"
+                ),
+                type(user),
+            )
+            return False
+
+        if not isinstance(state, (str, bool)):
+            logger.error(
+                (
+                    "Invalid type for `state` in `set_fsm_state`. Expected `str` or"
+                    " `bool`, got %s"
+                ),
+                type(state),
+            )
+            return False
+
+        if state:
+            self._manager.fsm[str(user)] = state
+        elif str(user) in self._manager.fsm:
+            del self._manager.fsm[str(user)]
+
+        return True
+
+    ss = set_fsm_state
+
+    def get_fsm_state(self, user: str | int) -> str | typing.Literal[False]:
+        """
+        Get FSM state for user
+        :param user: user id
+        :return: FSM state or False if user has no FSM state
+        """
+        if not isinstance(user, (str, int)):
+            logger.error(
+                (
+                    "Invalid type for `user` in `get_fsm_state`. Expected `str` or"
+                    " `int`, got %s"
+                ),
+                type(user),
+            )
+            return False
+
+        return self._manager.fsm.get(str(user), False)
+
+    gs = get_fsm_state
