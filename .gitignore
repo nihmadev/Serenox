@@ -1,20 +1,56 @@
-# Local build and tool caches
+# Legacy/reference trees and agent-local transaction artifacts
+/hikka/
+/.codex-transaction/
+/sidecar/python/.verification/
+
+# Local build, release, and tool output
 .cache/
 .tools/
 bin/
+dist/
+release/
+*.srnx
+*.tar.gz
+*.zip
+*.tmp
+*.pid
+*.sock
+*.log
 
 # Runtime state and credentials
 config.json
 data/
 *.session
 *.session.json
+*.db
+*.sqlite
+*.sqlite3
 
-# Python sidecar environment/cache
+# Go build/test/profiling output
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.prof
+coverage.out
+
+# Python environments and caches
+.venv/
+venv/
+env/
 sidecar/python/.venv/
-sidecar/python/.pytest_cache/
-sidecar/python/**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+**/__pycache__/
 *.py[cod]
 
-# Temporary package/build output
-*.srnx
-*.tmp
+# Editors and operating-system noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
