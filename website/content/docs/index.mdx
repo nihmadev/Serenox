@@ -1,0 +1,23 @@
+---
+title: Serenox documentation
+description: Build, extend, and operate a bounded Go userbot runtime with supervised plugins.
+---
+
+# Serenox documentation
+
+Serenox is a Go userbot runtime with supervised external plugins and an explicit compatibility boundary. The core owns Telegram sessions, event admission, resource limits, permissions, and recovery. Go executables and the managed Python sidecar communicate through stable protocol DTOs rather than Telegram-library objects.
+
+<Cards>
+  <Card title="Run safely without Telegram" href="/docs/setup" description="Build Serenox and replay the deterministic recorded fixture." />
+  <Card title="Build a plugin" href="/docs/plugin-development" description="Choose Go or Python, then package and install your first plugin." />
+  <Card title="Check compatibility" href="/docs/compatibility" description="See what is verified, partial, live-gated, or unsupported." />
+  <Card title="Operate Serenox" href="/docs/operations" description="Understand diagnostics, overload, recovery, and shutdown." />
+</Cards>
+
+## Choose the safe first step
+
+Start with the [recorded-mode quickstart](/docs/setup). It uses checked-in NDJSON updates and does not contact Telegram. The live account path is opt-in and documented separately because API credentials and session files grant account access.
+
+## The compatibility promise
+
+Serenox does not promise drop-in Hikka, Pyrogram, Telethon, or Aiogram compatibility. Unsupported operations fail explicitly. The [compatibility matrix](/docs/compatibility) separates protocol availability from deterministic tests and live Telegram verification.

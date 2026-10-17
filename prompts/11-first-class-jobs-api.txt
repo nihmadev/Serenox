@@ -1,0 +1,304 @@
+TASK: Implement a first-class, durable, bounded Jobs API for Serenox plugins.
+
+Repository: /home/nihmadev/Serenox
+
+Read the existing architecture, executor and per-plugin queues, module lifecycle,
+supervisor/RPC protocol, Go SDK, Python SDK/sidecar, package manifests and
+resource policies, storage, permissions, configuration, observability,
+shutdown/restart behavior, migration kit, compatibility matrix, prompts in
+`prompts/`, and all related tests before editing. Preserve existing user
+changes. Do not rewrite unrelated components. Do not create a second execution
+engine beside the existing bounded executor.
+
+MODULARITY REQUIREMENT
+This is a large API feature, not permission to create a large monolith.
+
+- Do not add or leave behind an implementation source file larger than 450
+  non-blank lines. If an existing file must grow beyond that size, split it by
+  responsibility before continuing.
+- Keep individual functions below 80 non-blank lines unless a parser or
+  serialization routine genuinely needs more; split validation and mapping
+  into focused helpers.
+- Separate protocol DTOs, validation, scheduler policy, persistence, runtime
+  dispatch, RPC handlers, Go SDK, Python SDK, CLI, and documentation into
+  separate files/packages. Do not put all job types, scheduling math, storage,
+  dispatch, and tests into one file.
+- Prefer small interfaces and dependency injection. The scheduler must be
+  testable against fake clocks, fake stores, and fake executors without starting
+  Telegram or a real plugin process.
+- Implement the feature in vertical slices. Keep each slice buildable and
+  covered by tests before adding the next slice.
+
+PRODUCT INTENT
+Serenox plugins are supervised workers inside a bounded automation kernel. A
+plugin must be able to run periodic maintenance, delayed notifications,
+cleanup, polling, digest generation, and recovery tasks without creating
+detached goroutines, unowned asyncio tasks, per-job timers, or hidden retry
+loops. The core owns scheduling, persistence, admission, limits, and lifecycle;
+the plugin owns the job handler and business logic.
+
+OBJECTIVE
+Add a typed `host.jobs` API and a declarative job surface for Go and Python
+plugins. Jobs must survive an optional daemon restart, use the existing
+per-plugin executor, remain bounded under overload, and have explicit behavior
+for missed schedules, cancellation, plugin restart, account shutdown, and
+ambiguous handler completion.
+
+The API must support a useful breadth of scheduling without becoming a generic
+workflow engine. Include one-shot jobs, fixed-delay intervals, fixed-rate
+intervals, calendar schedules with an explicit timezone, manual trigger,
+pause/resume, cancellation, inspection, and bounded job result/status history.
+Do not add arbitrary code expressions, shell commands, user-provided scripts,
+or an unbounded cron language.
+
+REQUIRED WORK
+
+1. Trace the current execution model before editing:
+   - Telegram ingress and command/watcher admission;
+   - built-in and external per-plugin executor pools;
+   - supervisor lifecycle and restart behavior;
+   - Python sidecar worker ownership and cancellation;
+   - plugin package resource limits and permissions;
+   - storage durability and account/plugin namespace rules;
+   - application startup, restore, unload, rollback, and shutdown order.
+
+   Record which existing loop/background behavior is verified, partial,
+   unsupported, or only documented. Do not silently turn legacy detached loops
+   into durable jobs without defining their migration behavior.
+
+2. Define the product/job ownership model:
+   - every job belongs to exactly one plugin instance and account identity;
+   - job IDs are stable within the plugin/account scope and cannot collide with
+     another plugin;
+   - the core owns schedule state, next-run calculation, admission, and
+     execution status;
+   - the plugin owns only its handler implementation and bounded payload;
+   - a job never outlives plugin unload, uninstall, account detach, or daemon
+     shutdown unless the documented restore policy says otherwise;
+   - jobs must not be able to invoke another plugin's handler or bypass
+     declared capabilities and permissions.
+
+3. Extend protocol v1 with typed, transport-neutral DTOs. Split types by
+   responsibility rather than creating one `jobs.go` containing the whole
+   feature. Define separate DTOs for at least:
+   - `JobSpec` and immutable job identity;
+   - one-shot, interval, and calendar schedule variants;
+   - timezone and daylight-saving behavior;
+   - misfire policy and overlap/concurrency policy;
+   - `JobStatus`, execution attempt, and bounded result summary;
+   - pause/resume/cancel/trigger/list/inspect requests and responses;
+   - stable job error categories and retryability;
+   - scheduler health and capacity information.
+
+   Use explicit operation names and optional fields. Do not encode job
+   definitions as arbitrary JSON in `Action.Value`. If a job payload is needed,
+   make it a bounded JSON value with a declared size/type policy, or require the
+   plugin to load state from host.storage.
+
+4. Define exact scheduling semantics:
+   - one-shot jobs run no earlier than their requested time and have a bounded
+     maximum future horizon;
+   - fixed-delay schedules calculate the next run after completion;
+   - fixed-rate schedules calculate from the schedule timeline and document
+     catch-up behavior;
+   - calendar schedules accept a deliberately finite expression model with
+     seconds/minutes/hours/day/week/month fields, or a reviewed cron subset;
+   - timezone names are validated against the installed tz database and DST
+     gaps/folds have explicit behavior;
+   - minimum interval, maximum interval, maximum jobs, maximum payload, and
+     maximum schedule horizon are configuration values;
+   - every schedule has a deadline and a maximum execution duration;
+   - no schedule creates a timer or goroutine per job.
+
+5. Implement a core scheduler as a lifecycle-owned component:
+   - use one owned scheduling loop and an efficient bounded priority structure,
+     timing wheel, or equivalent; justify the choice with benchmarks;
+   - make the clock injectable for deterministic tests;
+   - wake the scheduler when jobs are inserted, cancelled, paused, resumed, or
+     when the next deadline changes;
+   - enforce capacity before accepting a new job;
+   - enqueue due work into the existing per-plugin executor, never into a
+     private unbounded job worker pool;
+   - account for queue delay, execution time, missed runs, rejected runs, and
+     active overlap;
+   - ensure shutdown stops admission, persists state as documented, cancels or
+     drains accepted work according to policy, and waits for owned goroutines.
+
+6. Define overload and overlap policies. At minimum support bounded policies
+   such as:
+   - `skip_if_running`;
+   - `coalesce_one_pending`;
+   - `queue_one_bounded`; and
+   - `reject_when_plugin_queue_full`.
+
+   Do not allow a fast schedule to grow an unbounded backlog. Every rejected,
+   skipped, coalesced, and overdue execution must have an explicit status and
+   metric. A plugin cannot override core queue capacity by requesting more
+   workers or by scheduling zero-delay repeats.
+
+7. Add durable job persistence through a narrow internal interface. Do not
+   couple the scheduler to the JSON wire format or to one storage backend.
+   Persist only the minimum state needed for restore:
+   - job definition and version;
+   - plugin/account ownership;
+   - enabled/paused/cancelled state;
+   - next-run time and schedule revision;
+   - last-started/finished status and bounded error summary;
+   - bounded run counters and timestamps.
+
+   Define atomic create/update/delete semantics, crash recovery, schema version,
+   corruption behavior, fsync/commit guarantees, retention, and migration. Do
+   not persist message bodies, media bytes, arbitrary logs, or unbounded result
+   history. A job that was running during a crash must restore as `interrupted`
+   or another explicit state; it must not be silently reported as successful.
+
+8. Implement `host.jobs` reverse RPC with correlation, deadlines, cancellation,
+   disconnect cleanup, and hard limits. Support typed operations equivalent to:
+   - create/register;
+   - update schedule or policy where allowed;
+   - cancel/delete;
+   - pause/resume;
+   - trigger now;
+   - get/list/inspect status;
+   - acknowledge or clear bounded status where useful.
+
+   Registration must be atomic. A plugin must not publish a job if its metadata,
+   capabilities, permissions, schedule, handler name, payload, or resource
+   policy is invalid. Unknown operation, duplicate ID, stale revision,
+   unsupported schedule, expired deadline, overload, permission denial, and
+   plugin-not-ready errors must be stable structured protocol errors.
+
+9. Add declarative metadata and package validation:
+   - job handler name, description, schedule kind, and default policy;
+   - whether the job is persistent or session-only;
+   - maximum runtime and overlap policy;
+   - required capabilities and permissions;
+   - payload schema/size declaration if used;
+   - resource ceilings requested by the package.
+
+   Validate all declarations before install/activation and again at runtime
+   before registration. Do not expose every arbitrary plugin function as a job.
+   Core jobs and protected names cannot be replaced by external plugins.
+
+10. Extend the Go SDK and Python SDK/sidecar with equivalent APIs. Provide
+    ergonomic typed helpers for:
+    - declarative job handlers;
+    - schedule registration and update;
+    - cancellation, pause/resume, manual trigger;
+    - status inspection and bounded listing;
+    - context cancellation/deadlines;
+    - structured job errors and interrupted-run state.
+
+    Python APIs must respect the sidecar's event-loop/thread ownership and must
+    not leak tasks after cancellation. Go APIs must not spawn unmanaged
+    goroutines. SDK helpers must make it clear whether registration is durable,
+    whether a trigger was accepted or merely queued, and whether a run result
+    is final.
+
+11. Integrate jobs with lifecycle and package operations:
+    - configure/start/health/stop;
+    - plugin load/unload/restart/rollback/uninstall;
+    - daemon restart and account shutdown;
+    - control-bot commands where explicitly exposed;
+    - diagnostics and local control socket where appropriate.
+
+    On failed plugin activation, do not leave job declarations or scheduled
+    entries behind. On rollback, restore only the compatible version's jobs.
+    On uninstall, remove the plugin's job state according to the documented
+    retention policy. Avoid starting jobs before the plugin's handlers and
+    permissions are fully published.
+
+12. Enforce permissions and capability checks at every boundary:
+    - job registration/update/cancel;
+    - manual trigger;
+    - restore after restart;
+    - executor admission;
+    - host actions/storage/client/media/http calls made by a job.
+
+    A job must inherit the plugin's identity and declared capabilities. It must
+    not turn a scheduled execution into a privilege escalation or bypass the
+    normal action result and rate-limit path. Make account/plugin isolation
+    explicit in both code and tests.
+
+13. Add bounded observability and diagnostics:
+    - registered jobs and capacity usage;
+    - due, accepted, queued, started, completed, failed, timed-out, cancelled,
+      skipped, coalesced, overdue, and rejected executions;
+    - schedule delay, queue delay, runtime, next-run time, and last error;
+    - persistent-store failures, restore failures, and interrupted runs;
+    - scheduler loop health and executor interaction.
+
+    Never use job payloads, message IDs, chat IDs, usernames, arbitrary error
+    text, or unbounded job IDs as metric labels. Diagnostics may show bounded
+    job names and plugin IDs with redaction rules consistent with the rest of
+    Serenox.
+
+14. Add documentation and migration guidance:
+    - protocol DTOs, operations, limits, and stable errors;
+    - interval versus fixed-rate versus calendar semantics;
+    - timezone and DST behavior;
+    - persistence, crash, restore, misfire, overlap, and cancellation rules;
+    - Go/Python examples for cleanup, digest, delayed reply, and polling jobs;
+    - migration guidance for legacy `@loader.loop` behavior;
+    - compatibility matrix and milestone status;
+    - operations guidance for capacity, overload, restart, and recovery.
+
+    Do not claim exactly-once execution. A job run is at-most-once at admission
+    unless a separate typed operation has its own idempotency contract.
+
+TESTING
+
+Add focused tests in separate packages/files for:
+
+- schedule DTO validation, canonicalization, timezone/DST, and malformed input;
+- fake-clock next-run calculations and all misfire policies;
+- priority queue/timing-wheel capacity, wakeups, cancellation, and ordering;
+- fixed-delay, fixed-rate, calendar, one-shot, pause/resume, and manual trigger;
+- overlap, coalescing, queue-full, timeout, cancellation, and executor limits;
+- persistence commit, corruption, schema migration, crash recovery, and restore;
+- plugin/account isolation, revision conflicts, duplicate IDs, and permissions;
+- reverse RPC multiplexing, deadlines, disconnects, duplicate/unknown IDs, and
+  bounded pending requests;
+- Go SDK and Python sidecar parity, cancellation, and no-leaked-task behavior;
+- plugin activation failure, restart, rollback, unload, uninstall, and shutdown;
+- deterministic recorded/supervised end-to-end job fixtures;
+- race, overload, cleanup, benchmark, and opt-in soak behavior.
+
+Run at minimum:
+
+```text
+make fmt-check
+make lint
+make test
+make test-race
+make build
+go test -run '^$' -bench . -benchmem ./...
+SERENOX_SOAK=1 go test -run 'Soak|Resource' -count=1 ./...
+```
+
+ACCEPTANCE CRITERIA
+
+1. Go and Python plugins can register and operate one-shot, interval, and
+   calendar jobs through typed APIs without unmanaged goroutines/tasks.
+2. Jobs execute through the existing bounded per-plugin executor and obey
+   queue, worker, timeout, rate-limit, capability, and permission policies.
+3. Persistent jobs restore with explicit crash/interrupted/misfire semantics;
+   no job is silently reported successful after a daemon or plugin crash.
+4. Schedule state, pending work, payloads, status, and metrics remain bounded.
+5. Plugin unload, restart, rollback, uninstall, account shutdown, and daemon
+   shutdown leave no orphaned job, worker, timer, RPC waiter, or storage entry.
+6. Manual trigger, pause/resume, cancellation, stale revision, overload, and
+   unsupported schedule behavior are deterministic and documented.
+7. Existing command, watcher, inline/callback, action, storage, media, HTTP,
+   control-bot, package, and lifecycle behavior remains compatible.
+8. No exactly-once or transactional Telegram execution claim is introduced.
+
+DELIVERABLE
+
+Implement the protocol, scheduler, persistence interface/backend, core
+integration, package policy, Go SDK, Python SDK/sidecar, tests, examples,
+benchmarks, and necessary documentation. Keep implementation files modular and
+below the stated limits. Report changed files, DTOs, operation names, schedule
+semantics, limits, persistence guarantees, restart/misfire behavior, cleanup
+guarantees, unsupported cases, benchmark/soak results, and all verification
+commands.

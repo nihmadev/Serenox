@@ -1,0 +1,16 @@
+{
+  "format": "serenox.plugin.package/v1",
+  "id": "example.moderation",
+  "name": "Moderation example",
+  "version": "1.0.0",
+  "description": "Owner-only reply moderation and exact outgoing no-prefix examples",
+  "category": "python-sidecar",
+  "protocol": {"min": "1.0", "max_exclusive": "2.0"},
+  "core": {"min": "0.1.0", "max_exclusive": "1.0.0"},
+  "sdk": {"min": "0.1.0", "max_exclusive": "1.0.0"},
+  "sidecar": {"min": "0.1.0", "max_exclusive": "1.0.0"},
+  "entrypoints": [{"os": "any", "arch": "any", "path": "plugin.py", "module": "plugin.py", "class": "ModerationExample"}],
+  "capabilities": ["commands", "watchers", "telegram.moderation"],
+  "permissions": ["telegram.edit", "telegram.moderation.members.restrict", "telegram.moderation.members.ban"],
+  "files": []
+}

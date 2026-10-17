@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "data_dir": "data",
+  "log_level": "info",
+  "shutdown_timeout": "20s",
+  "storage": {
+    "path": "state.json",
+    "max_namespaces": 256,
+    "max_keys_per_namespace": 2048,
+    "max_total_entries": 65536,
+    "max_namespace_bytes": 128,
+    "max_key_bytes": 256,
+    "max_value_bytes": 1048576,
+    "max_file_bytes": 33554432
+  },
+  "execution": {
+    "max_plugins": 256,
+    "queue_capacity": 128,
+    "workers_per_plugin": 2,
+    "handler_timeout": "15s"
+  },
+  "rate_limit": {
+    "tokens_per_second": 2,
+    "burst": 30,
+    "max_identities": 10000,
+    "idle_ttl": "10m",
+    "sweep_interval": "1m",
+    "shards": 16
+  },
+  "dispatch": {
+    "command_prefix": ".",
+    "max_commands": 4096,
+    "max_aliases": 8192,
+    "max_watchers": 8192
+  },
+  "http": {
+    "max_request_bytes": 524288,
+    "max_response_bytes": 524288,
+    "max_headers": 64,
+    "max_header_bytes": 65536,
+    "max_concurrent": 64,
+    "queue_capacity": 256,
+    "requests_per_second": 10,
+    "burst": 20
+  },
+  "telegram": {
+    "enabled": true,
+    "api_id": 0,
+    "api_hash": "",
+    "session_file": "telegram.session.json",
+    "auth_mode": "phone",
+    "device_model": "Serenox",
+    "app_version": "0.1.0",
+    "system_version": "Go",
+    "lang_code": "en",
+    "system_lang_code": "en-US"
+  },
+  "plugins": {
+    "trust_mode": "allow-unsigned",
+    "trust_file": "",
+    "retain_versions": 3,
+    "max_loaded": 32,
+    "python_executable": "",
+    "python_managed_runtime": "",
+    "python_environment_policy": "isolated",
+    "python_dependency_policy": "packaged",
+    "python_queue_capacity": 64,
+    "python_workers": 2,
+    "python_action_batch": 128,
+    "python_action_bytes": 262144,
+    "python_storage_entries": 1024,
+    "python_storage_value_bytes": 262144,
+    "python_callback_capacity": 256,
+    "python_max_frame_bytes": 1048576,
+    "python_handler_timeout": "30s",
+    "python_shutdown_timeout": "5s"
+  }
+}

@@ -1,0 +1,555 @@
+TASK: Implement a first-class durable event fabric for Serenox plugins.
+
+Repository: /home/nihmadev/Serenox
+
+Read the current repository before editing: all earlier prompts in `prompts/`,
+architecture and compatibility documents, protocol v1 envelopes and framing,
+plugin metadata and package manifests, reverse RPC, App admission and dispatch,
+the bounded executor, storage and Jobs APIs, action results and idempotency,
+plugin supervision and lifecycle, Go SDK, Python SDK/sidecar, recorded Telegram
+transport, observability, application manifest, examples, and all related tests.
+Preserve existing user changes. Do not rewrite unrelated components. Do not
+infer durability, retry, ordering, or live support from DTOs or documentation;
+trace the actual implementation first.
+
+TERMINOLOGY
+
+Call the product-level subsystem the Serenox Event Fabric. Use conventional,
+descriptive protocol and package names such as `events`, `eventbus`,
+`EventEnvelope`, `EventSubscription`, and `host.events`. Do not put a marketing
+codename into the wire protocol. A future UI or product may call the subsystem
+“Serenox Relay”, but protocol compatibility must not depend on that name.
+
+PRIMARY DELIVERABLE
+
+Implement a production-quality, bounded event fabric that lets supervised Go
+and Python plugins publish versioned domain events and consume declared event
+subscriptions without knowing another plugin's process, language, socket, or
+installation path.
+
+The intended composition model is:
+
+```text
+Telegram/control/job/core event
+          -> core Event Fabric
+          -> declared subscription and bounded delivery
+          -> plugin worker
+          -> zero or more typed actions and emitted events
+          -> further declared subscribers
+```
+
+The core owns event identity, authentication, routing, persistence, admission,
+retry scheduling, dead-letter state, quotas, cancellation, observability, and
+lifecycle cleanup. Plugins own domain logic and explicitly declared event
+schemas. The Event Fabric must reuse the existing supervisor, executor,
+storage, Jobs/lifecycle, framing, permission, and action-result primitives. It
+must not create a second plugin runtime, unbounded message broker, generic
+pub/sub socket, or hidden distributed-system claim.
+
+MODULARITY REQUIREMENT
+
+- Do not add or leave behind an implementation source file larger than 450
+  non-blank lines. Split files by protocol, validation, routing, persistence,
+  delivery, retry/DLQ, SDK, metrics, and lifecycle responsibility.
+- Keep individual functions below 80 non-blank lines where practical.
+- Use narrow interfaces and dependency injection for clock, ID generation,
+  durable store, scheduler/wakeup, executor admission, plugin resolver, and
+  metrics.
+- Keep every vertical slice buildable and tested before adding the next.
+- Do not add one goroutine, timer, queue, lock, file, or retry loop per event,
+  subscription, plugin, account, or topic. Coordinators must be bounded and
+  lifecycle-owned.
+- Do not bypass or duplicate `internal/executor`, `internal/jobs`, plugin
+  supervision, host storage, or existing RPC framing.
+
+PRODUCT INTENT
+
+Today Serenox plugins can respond to Telegram updates, commands, callbacks,
+jobs, and host operations, but they are mostly isolated endpoints. The Event
+Fabric turns them into composable workers. For example:
+
+```text
+telegram.message.received/v1
+  -> voice detector
+  -> media.transcribed/v1
+  -> summarizer
+  -> summary.created/v1
+  -> knowledge-store and telegram-presenter
+```
+
+No subscriber receives an event merely because it uses a matching string.
+Publishing, subscribing, source scope, account scope, payload size, delivery
+class, and event namespaces must all be declared and permission checked.
+
+The initial implementation is local to one Serenox daemon and one admitted
+Telegram account runtime. It must be designed so the persistence interface can
+later use PostgreSQL, but it must work correctly with the current file-backed
+store and must not claim multi-node delivery, distributed consensus, or high
+availability.
+
+NON-GOALS AND HARD BOUNDARIES
+
+Do not add any of the following:
+
+- Kafka, NATS, Redis Streams, RabbitMQ, MQTT, AMQP, or another required broker;
+- arbitrary plugin-owned sockets, ports, listeners, shared files, subprocess
+  pipes, or direct process discovery;
+- arbitrary reflection dispatch, runtime code loading, eval, shell, SQL, raw
+  Telegram updates, gotd objects, access hashes, credentials, or secrets;
+- unbounded wildcard topics, regex subscriptions, payload schemas, fan-out,
+  retention, retries, backoff, event history, or replay;
+- exactly-once delivery or exactly-once external side-effect claims;
+- automatic replay of Telegram/HTTP mutations after an ambiguous result;
+- atomicity claims across plugin storage, external effects, actions, and event
+  publication unless one concrete transaction actually covers them;
+- a second scheduler or worker pool hidden inside the fabric;
+- cross-account publication or consumption by default;
+- event payloads in metric labels or unrestricted diagnostic output.
+
+REQUIRED WORK
+
+1. Audit and publish the current event boundary before coding.
+
+   Trace the real path for Telegram updates, commands, callbacks, inline
+   queries, control-bot events, job invocations, dispatch responses, actions,
+   reverse RPC, executor admission, process restart, unload, rollback, and
+   daemon shutdown. Record which paths are at-most-once today and where an
+   action may have completed before a process or RPC failure.
+
+   Add an Event Fabric implementation matrix covering protocol, package
+   policy, core routing, persistence, Go SDK, Python SDK, recorded fixtures,
+   retry, DLQ, replay, and lifecycle status. Use `verified`, `partial`,
+   `planned`, and `unsupported` honestly.
+
+2. Define a dedicated versioned event domain model.
+
+   Introduce a finite DTO such as:
+
+   ```json
+   {
+     "id": "evt_...",
+     "type": "media.transcribed",
+     "version": 1,
+     "source": "plugin.example.voice",
+     "account_id": 123,
+     "occurred_unix_ms": 0,
+     "correlation_id": "corr_...",
+     "causation_id": "evt_parent",
+     "trace_id": "trace_...",
+     "dedupe_key": "optional-publisher-key",
+     "content_type": "application/json",
+     "payload": {}
+   }
+   ```
+
+   Exact Go names may follow repository conventions, but define and validate:
+
+   - host-assigned immutable event ID and trusted source identity;
+   - lowercase namespaced event type and positive schema version;
+   - account/plugin scope supplied by the host, never trusted from payload;
+   - occurrence and durable-accept timestamps with clear clock ownership;
+   - correlation, causation, trace, attempt, and hop metadata;
+   - optional publisher-scoped deduplication key;
+   - JSON payload with strict total, depth, string, collection, and field limits;
+   - optional content/schema digest only if it has a verified consumer;
+   - stable headers from a finite allowlist, not arbitrary secret-bearing maps.
+
+   The host must overwrite identity, source, account, attempt, and routing
+   fields. Unknown fields and invalid combinations must fail deterministically.
+   Protocol evolution must be additive or explicitly negotiated.
+
+3. Add explicit publication and subscription declarations.
+
+   Extend plugin metadata and signed package policy with bounded declarations,
+   for example:
+
+   ```text
+   publishes: media.transcribed/v1, voice.failed/v1
+   subscribes: telegram.media.voice.received/v1
+   ```
+
+   Each publication declaration must define exact type/version, description,
+   maximum payload bytes, delivery class, and optional schema descriptor.
+   Each subscription must define exact type/version, stable handler ID,
+   source/account policy, concurrency/admission class, maximum runtime, retry
+   policy reference, and whether durable replay is accepted.
+
+   Do not permit unrestricted `*`, `plugin.*`, regex, prefix, or user-supplied
+   runtime subscriptions in v1. If narrowly bounded namespace matching is
+   genuinely required, make it a separate high-risk capability with strict
+   quotas and tests; exact matching remains the default.
+
+   Validate consistency at package verification, handshake, activation, and
+   restore. A process may advertise only declarations allowed by its signed
+   `.srnx` manifest. Duplicate handlers, type/version conflicts, missing
+   capabilities, excessive declarations, and undeclared publication must fail
+   before activation.
+
+4. Define least-privilege capabilities and permissions.
+
+   Introduce explicit capabilities such as `events.publish` and
+   `events.subscribe`, plus exact package permissions that cannot be widened by
+   handshake metadata. Define a finite naming rule, for example:
+
+   ```text
+   event.publish.media.transcribed.v1
+   event.subscribe.media.transcribed.v1
+   ```
+
+   If a more compact signed declaration is used, keep operation-to-permission
+   mapping deterministic and exhaustively tested. Separate permissions for:
+
+   - plugin domain publication;
+   - consumption of another plugin's public domain event;
+   - privacy-sensitive Telegram-derived core events;
+   - administrative/core lifecycle events;
+   - replay and DLQ inspection/management.
+
+   Ordinary event permissions must never imply storage, HTTP, media, jobs,
+   Telegram mutation, moderation, control-bot, secret, or future service-call
+   permissions.
+
+5. Implement bounded host publication.
+
+   Add a typed reverse-RPC surface such as `host.events.publish`. A successful
+   response means the core durably accepted the event under the documented
+   delivery class; it does not mean all subscribers processed it.
+
+   Publication must enforce:
+
+   - authenticated plugin/account identity;
+   - declared type/version and permission;
+   - frame and payload limits;
+   - per-plugin/account rate, byte, retained-event, and in-flight quotas;
+   - deduplication scope and retention;
+   - deadline and cancellation;
+   - maximum fan-out known before commit;
+   - explicit overload and storage-failure errors.
+
+   Define result DTOs with event ID, accepted/deduplicated state, matched
+   subscriber count, durable class, and warnings. Do not synchronously wait for
+   every subscriber in the publish call.
+
+6. Integrate event emission with dispatch responses where useful.
+
+   Permit a handler to return a bounded list of emitted events alongside its
+   existing actions only if this fits the current protocol cleanly. The host
+   validates and accepts them after the handler response. Document exact
+   ordering between actions and emitted events and never imply transactionality
+   across Telegram/HTTP actions and publication.
+
+   If reverse `host.events.publish` and response-carried events coexist, they
+   must share one validator, permission path, quota model, persistence path,
+   idempotency semantics, and SDK type. Do not implement two subtly different
+   buses.
+
+7. Implement durable fan-out and delivery state.
+
+   For every accepted durable event, create bounded per-subscription delivery
+   state. Define a clear state machine such as:
+
+   ```text
+   pending -> admitted -> running -> acknowledged
+      |          |           |
+      +----------+-----------+-> retry_wait -> pending
+                                  |
+                                  +-> dead_lettered
+   ```
+
+   Persist only the minimum necessary event and delivery records. Bound total
+   retained bytes, event count, deliveries per event, attempts, history,
+   timestamps, and error summaries. Use stable revisions or compare-and-swap
+   semantics to prevent concurrent acknowledgement/retry races.
+
+   Reuse the existing per-plugin executor for admission and fairness. Queue
+   full must become an explicit pending/retry or rejected state according to
+   policy; it must not spawn detached work or drop durable events silently.
+
+8. Define delivery and acknowledgement semantics precisely.
+
+   Durable delivery is at-least-once until acknowledged or dead-lettered. A
+   plugin crash after performing an effect but before acknowledgement can cause
+   redelivery. State this prominently and provide event ID/deduplication helpers
+   so handlers can be idempotent.
+
+   Define:
+
+   - what constitutes acknowledgement;
+   - explicit retryable failure versus terminal rejection;
+   - timeout, cancellation, process exit, protocol disconnect, malformed
+     response, queue overload, and daemon crash behavior;
+   - whether acknowledgement is an explicit RPC or successful handler return;
+   - attempt number and previous bounded error summary;
+   - maximum attempts and deterministic backoff with jitter controlled by a
+     fakeable host clock/random source;
+   - no retry after a handler reports an ambiguous external mutation unless
+     the plugin explicitly resolves it through its own durable idempotency key.
+
+   Ephemeral delivery may be supported as a separate declared class, but it
+   must remain bounded and explicitly at-most-once. Never silently downgrade a
+   durable declaration to ephemeral behavior.
+
+9. Implement dead-letter and bounded replay operations.
+
+   Provide owner/operator inspection through the existing local control/CLI
+   plane and a narrowly permissioned plugin API only if justified. Operations
+   may include list, inspect, retry one, discard one, and clear a bounded
+   selection. Require explicit confirmation for destructive bulk operations.
+
+   Replay must create a new delivery attempt or a new event with an explicit
+   link to the original; choose and document one model. It must preserve source,
+   schema version, trace lineage, account/plugin isolation, and current
+   subscription compatibility. It must not bypass a removed permission or
+   deliver to a newly installed subscriber unless the operator explicitly asks
+   for historical replay under a bounded policy.
+
+10. Prevent cycles, storms, and amplification.
+
+   Enforce a maximum causal hop count, maximum fan-out, maximum events emitted
+   per handler invocation, per-trace event budget, recursion/cycle diagnostics,
+   and per-source/type rate limits. A cycle such as `a -> b -> a` must terminate
+   predictably without exhausting executor queues or durable storage.
+
+   Fairness must prevent one noisy publisher, account, event type, or slow
+   subscriber from starving commands, moderation, callbacks, jobs, or unrelated
+   plugins. Define separate but bounded admission budgets where necessary.
+
+11. Define core-originated events without leaking transport objects.
+
+   Normalize only a useful finite catalog initially, such as:
+
+   - `telegram.message.received/v1` and `.edited/v1`;
+   - `telegram.message.deleted/v1` with bounded IDs;
+   - `telegram.callback.received/v1`;
+   - `telegram.inline_query.received/v1`;
+   - `control.command.received/v1` where policy permits;
+   - `jobs.run.completed/v1` with privacy-minimal status;
+   - `plugin.lifecycle.changed/v1` for owner/operator consumers only.
+
+   Reuse existing bounded DTOs where appropriate. Do not serialize raw updates,
+   gotd/Bot API objects, access hashes, tokens, session state, stack traces,
+   unrestricted message history, or secret configuration into events.
+
+   Existing command/watcher/callback routing must remain compatible. Core event
+   publication must not cause duplicate handler execution unless a plugin
+   explicitly declares both legacy and Event Fabric subscriptions and the docs
+   explain the consequence.
+
+12. Implement Go and Python SDK parity.
+
+   Provide typed APIs for:
+
+   - declaring publications and subscriptions;
+   - registering handlers by stable ID;
+   - publishing an event with payload, dedupe key, and correlation context;
+   - receiving immutable envelope metadata and typed/validated payload;
+   - reporting success, retryable failure, terminal failure, and ambiguous
+     outcome;
+   - accessing idempotency helpers without direct access to another plugin's
+     state;
+   - inspecting only caller-owned delivery metadata where allowed.
+
+   Python handlers must run on the managed sidecar event loop with bounded
+   pending reverse RPC. Go handlers must use context deadlines and must not
+   encourage detached goroutines. Both SDKs must expose the same semantics and
+   stable structured errors.
+
+13. Integrate persistence and crash recovery.
+
+   Work with the current storage abstraction and file backend. Define atomic
+   commit boundaries for event acceptance, delivery creation, acknowledgement,
+   retry transition, and dead-letter transition. A crash must not produce a
+   successful publish response for an event that was never committed.
+
+   On startup:
+
+   - validate schema and bounded cardinality;
+   - recover pending/retry/running delivery records;
+   - mark pre-crash running attempts interrupted before redelivery;
+   - reconcile active plugin versions and current declarations;
+   - quarantine corrupt or incompatible records with actionable diagnostics;
+   - expire retention deterministically;
+   - never discard all fabric state silently.
+
+   If the current `storage.Store` cannot efficiently or atomically support the
+   required internal records, add the smallest general internal persistence
+   interface and implement it for the file backend. Do not leak it into plugin
+   SDKs or falsely claim PostgreSQL support.
+
+14. Integrate lifecycle, upgrades, rollback, and uninstall.
+
+   Define behavior for plugin start, ready, stop, crash, circuit-open, restart,
+   upgrade, failed activation, rollback, unload, uninstall, account detach,
+   Telegram disconnect, and daemon shutdown.
+
+   A stopped provider retains pending durable deliveries according to bounded
+   policy but receives no new running attempt. Upgrade must validate compatible
+   handler IDs and event versions before activation. Rollback must not reinterpret
+   persisted payload schemas. Uninstall must require an explicit retain,
+   dead-letter, export, or discard policy for owned pending deliveries.
+
+15. Add observability and operator surfaces.
+
+   Add bounded metrics and diagnostics for published, deduplicated, rejected,
+   routed, admitted, acknowledged, retried, dead-lettered, expired, recovered,
+   and dropped-ephemeral events; queue depth; retained bytes; delivery latency;
+   handler duration; storage failures; hop-limit termination; and overload.
+
+   Use only bounded labels such as event type from validated declarations,
+   plugin ID from installed metadata, delivery class, and stable result code.
+   Never use payload, message text, correlation ID, trace ID, event ID, chat ID,
+   user ID, dedupe key, error text, URL, or secret as a metric label.
+
+   Add CLI/local-control surfaces such as:
+
+   ```text
+   serenox events status
+   serenox events list --state pending|dead-lettered
+   serenox events inspect EVENT_ID
+   serenox events retry EVENT_ID --subscription ID
+   serenox events discard EVENT_ID --yes
+   ```
+
+   Exact syntax may fit current CLI conventions. Output must be bounded,
+   redacted, account-scoped, and safe while the daemon is running.
+
+16. Build a focused end-to-end example.
+
+   Add two small supervised plugins or fixtures proving cross-language or
+   cross-process composition:
+
+   ```text
+   producer publishes example.note.created/v1
+       -> consumer receives it
+       -> consumer emits example.note.processed/v1 or returns a reply action
+   ```
+
+   Include at least one Go and one Python participant across the full test
+   suite. Demonstrate deduplication, subscriber crash before acknowledgement,
+   redelivery, terminal failure/DLQ, replay, hop-limit protection, unload, and
+   restart. The example must be deterministic and work without Telegram or the
+   network through recorded/fake input.
+
+17. Document the contract completely.
+
+   Add an Event Fabric guide and update architecture, protocol, plugin package,
+   Go/Python plugin guides, compatibility, operations, security, application
+   manifest, and milestones as needed. Document:
+
+   - event naming and schema-version policy;
+   - declaration and permission rules;
+   - durable versus ephemeral delivery;
+   - at-least-once semantics and idempotent handler patterns;
+   - persistence and commit boundaries;
+   - ordering guarantees and explicit non-guarantees;
+   - retries, backoff, DLQ, replay, retention, and quotas;
+   - cycles, hop/fan-out budgets, and fairness;
+   - privacy/redaction and core-originated event catalog;
+   - lifecycle, upgrade, rollback, uninstall, and recovery;
+   - standalone file-backend status and absence of multi-node guarantees;
+   - how the next Service Broker layer can reuse trace, admission, and envelope
+     primitives without being conflated with asynchronous events.
+
+TESTING
+
+Add focused tests for:
+
+- protocol golden round trips, additive compatibility, strict validation,
+  unknown fields, identity overwrite, JSON depth/size/cardinality, and malformed
+  nested payloads;
+- metadata/package declaration matching, duplicate handlers, type/version
+  naming, permission mapping, undeclared publication, and activation rollback;
+- publish acceptance, deduplication, quota rejection, deadline, cancellation,
+  frame limits, fan-out preflight, and durable storage failure;
+- exact subscription routing, source/account isolation, no wildcard leakage,
+  zero subscribers, multiple subscribers, and removed subscriptions;
+- delivery state transitions, acknowledgement, retryable/terminal/ambiguous
+  failure, process crash, timeout, malformed response, queue overload, and DLQ;
+- deterministic backoff, fake clock, maximum attempts, retention expiry,
+  replay/discard authorization, and stale revision races;
+- crash points before/after event commit, delivery creation, admission,
+  acknowledgement, retry transition, and cleanup;
+- at-least-once redelivery and plugin idempotency examples without exactly-once
+  claims;
+- causal hop limit, event-per-trace budget, cycles, fan-out storms, noisy
+  publishers, slow subscribers, fairness, and bounded memory/storage use;
+- core-originated Telegram/control/job/lifecycle event conversion and proof no
+  raw transport object or secret crosses the boundary;
+- Go/Python SDK parity, structured errors, sidecar cancellation/disconnect,
+  pending-map cleanup, and immutable envelope metadata;
+- plugin start/crash/restart/circuit/unload/uninstall, upgrade/rollback,
+  account detach, daemon shutdown, and no leaked goroutines/timers/waiters;
+- recorded end-to-end producer/consumer fixtures, race tests, benchmarks, and
+  opt-in soak tests.
+
+Normal tests must remain credential-free and network-free. Run at minimum:
+
+```text
+make fmt-check
+make lint
+make test
+make test-race
+make build
+uv run --project sidecar/python python -m unittest discover -s sidecar/python/tests -t sidecar/python
+go test -run '^$' -bench 'Event|Fabric|Dispatch' -benchmem ./...
+SERENOX_SOAK=1 go test -run 'Soak|Event|Fabric|Resource' -count=1 ./...
+```
+
+If a repository-wide command has a known pre-existing failure, prove that the
+Event Fabric change introduces no new failure, report the exact baseline and
+delta, and do not describe the entire gate as passing.
+
+ACCEPTANCE CRITERIA
+
+1. Verified Go and Python plugins can declare exact event publications and
+   subscriptions and compose through the core without direct process access.
+2. The host authenticates and overwrites source/account identity, validates
+   type/version/payload, and enforces signed declarations and least-privilege
+   permissions at publication and delivery.
+3. A successful durable publish response corresponds to committed local state;
+   subscriber success remains separate and inspectable.
+4. Durable delivery is honestly at-least-once, crash recovery is deterministic,
+   and no exactly-once external-effect claim is made.
+5. Retry, acknowledgement, timeout, ambiguous outcome, DLQ, replay, retention,
+   and uninstall semantics are explicit, bounded, and tested.
+6. Existing per-plugin executor fairness and supervision are reused; no second
+   unbounded scheduler, worker pool, broker, or plugin runtime is introduced.
+7. Event type count, payloads, frames, publications, subscriptions, fan-out,
+   attempts, retained bytes, histories, hops, trace budgets, queues, cursors,
+   metrics, and operator output all have tested hard bounds.
+8. Causal cycles and event storms terminate predictably without starving
+   commands, watchers, callbacks, jobs, moderation, or unrelated plugins.
+9. Core Telegram/control/job/lifecycle events use bounded DTOs and leak no raw
+   library objects, credentials, access hashes, secrets, or unrestricted text.
+10. Plugin/account/version isolation, lifecycle cancellation, restart, upgrade,
+    rollback, uninstall, and daemon recovery are race-tested and deterministic.
+11. Go/Python SDK behavior and structured errors match, including cancellation,
+    deduplication, retry classification, and sidecar cleanup.
+12. Existing Telegram dispatch, actions, storage, HTTP, media, jobs, moderation,
+    control bot, package installation, and recorded mode remain compatible.
+13. Documentation clearly separates verified local durability from planned or
+    unsupported multi-node/distributed behavior.
+
+DELIVERABLE
+
+Implement the Event Fabric protocol and validators, signed declarations,
+capabilities and permissions, publication reverse RPC, durable routing and
+delivery state, acknowledgement/retry/DLQ/replay, persistence and recovery,
+executor and lifecycle integration, core event catalog, Go SDK, Python
+SDK/sidecar, CLI/local-control diagnostics, observability, focused examples,
+tests, benchmarks, soak gate, and all necessary documentation.
+
+Keep the work modular and update only related files. In the final report list:
+
+- changed files and package layout;
+- final event envelope, declaration, state-machine, and persistence schemas;
+- capability/permission table and package-handshake validation;
+- exact publish commit, fan-out, delivery, acknowledgement, retry, DLQ, replay,
+  ordering, idempotency, and ambiguity semantics;
+- resource limits, fairness, cycle/storm protection, and lifecycle behavior;
+- Go/Python SDK APIs and end-to-end example behavior;
+- observability, privacy/redaction, and operator commands;
+- verified/partial/planned/unsupported matrix;
+- benchmark/soak results when run;
+- every verification command and its exact result;
+- any pre-existing repository failures separately from new regressions.

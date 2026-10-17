@@ -1,0 +1,3 @@
+{"id":"recorded-1","kind":"message","occurred_unix_ms":1700000000000,"message":{"id":101,"chat_id":42,"sender_id":7,"date_unix_ms":1700000000000,"text":".ping","outgoing":true}}
+{"id":"recorded-2","kind":"message","occurred_unix_ms":1700000001000,"message":{"id":102,"chat_id":42,"sender_id":8,"date_unix_ms":1700000001000,"text":"hello"}}
+

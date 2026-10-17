@@ -1,0 +1,117 @@
+TASK: Implement reliable typed action results, idempotency, and bounded multi-step workflows for Serenox plugins.
+
+Repository: /home/nihmadev/Serenox
+
+Read the existing protocol v1 Action/ActionResult DTOs and validators, Telegram transport and live gotd action adapter, recorded transport, App action execution, inline/callback registration, executor and supervisor lifecycle, media service, Go SDK, Python SDK/sidecar, permissions, observability, restart behavior, and all related tests before editing. Preserve existing user changes. Do not expose Telegram-library types or bypass the core action boundary.
+
+PRODUCT INTENT
+Serenox plugins are workers inside a general-purpose automation core. A plugin may implement a command, demotivator, synthesizer, media converter, moderation workflow, or notification pipeline that performs several dependent Telegram operations. Those workflows need real results, safe retries, clear partial failure semantics, and protection against duplicate sends after timeouts or reconnects.
+
+OBJECTIVE
+Make the action pipeline reliable and composable. Every supported Telegram action must return a meaningful typed result when available, batch execution must report per-action outcomes, and retries must be safe according to an explicit idempotency contract. Preserve at-most-once event dispatch and bounded resource usage; do not pretend Telegram mutations are transactional when they are not.
+
+REQUIRED WORK
+1. Trace the complete action path from Go/Python plugin handler through SDK lowering, sidecar/supervisor reverse RPC, App action validation and permission checks, callback registration, `telegram.ApplyBatch`, recorded transport, and live gotd adapter. Identify where successful actions currently return no message/peer data and where timeouts can make the caller uncertain about whether Telegram accepted a mutation.
+
+2. Extend the protocol with typed result DTOs. At minimum support:
+   - action ID and operation name;
+   - success/failure and stable structured error;
+   - created or affected `Message` when Telegram returns or the adapter can safely reconstruct it;
+   - affected `Peer` where useful;
+   - server-assigned message ID, date, and media handle when available;
+   - retryability, flood-wait duration, and an explicit `outcome_unknown` state for ambiguous transport failures;
+   - bounded per-action metadata without arbitrary JSON blobs or raw Telegram objects.
+
+   Do not fabricate success, message IDs, or message bodies. If Telegram accepted an operation but the response cannot prove the result, report the documented ambiguous state and let the caller choose a follow-up read or recovery policy.
+
+3. Define and implement idempotency semantics:
+   - every mutating action may carry a caller-supplied idempotency key, or the core derives a stable key only where that is safe;
+   - the key is scoped to plugin, account, operation, and a bounded retention window;
+   - duplicate requests return the original result without repeating the Telegram mutation;
+   - keys are not reused across unrelated operations or plugins;
+   - storage and memory limits, eviction, restart behavior, and crash consistency are explicit;
+   - operations without a safe idempotency mapping remain at-most-once and return `outcome_unknown` on ambiguous failure.
+
+   Do not build an unbounded global deduplication cache. Do not retry POST-like Telegram mutations merely because a socket timed out.
+
+4. Add action batch results with per-action status. Preserve sequential ordering by default because Telegram actions are not transactional. For each action return success, failure, skipped, or outcome-unknown plus the stable error and result DTO. Define whether later actions run after a failure, and add an explicit bounded `stop_on_error` or equivalent only if it is useful and backwards-compatible.
+
+5. Make batch semantics honest:
+   - no claim of atomicity across Telegram actions;
+   - storage mutations may remain atomic through host.storage, but Telegram mutations are only sequential;
+   - callback registration and inline-unit publication must not leave dangling routes when the corresponding action fails;
+   - if an action sends a message and later registration fails, report the partial state and perform only documented best-effort cleanup;
+   - every result must identify the action that produced it.
+
+6. Improve the live gotd adapter for the supported action subset:
+   - return created message DTOs for send/reply/media where the server response permits;
+   - return affected message/peer data for edit/delete/pin/react/forward where available;
+   - preserve HTML/plain parsing and inline markup behavior;
+   - classify FloodWait, permissions, missing peer/message, rate limits, media errors, disconnects, and unsupported options into stable protocol errors;
+   - never retry a mutation implicitly after an ambiguous response;
+   - keep temporary media files and handles bounded and cleaned.
+
+7. Improve recorded and fake transports to model realistic action outcomes, including returned IDs, partial batches, timeout after server acceptance, duplicate idempotency keys, FloodWait, missing messages, and unsupported operations. Recorded mode must remain deterministic and credential-free.
+
+8. Extend reverse RPC and SDK APIs for results:
+   - Go SDK helpers should return typed `ActionResult` values or a typed workflow result;
+   - Python SDK async helpers should expose created message/result data and structured exceptions without leaking transport details;
+   - preserve existing ergonomic fire-and-collect behavior where possible;
+   - provide explicit helpers for `send`, `reply`, `edit`, `delete`, media attach, and bounded action batches;
+   - make cancellation distinguish local cancellation from remote outcome unknown.
+
+9. Add a bounded workflow primitive only if it composes with the current worker model. A workflow may execute a finite list of typed steps with:
+   - maximum step count;
+   - shared deadline and cancellation;
+   - explicit stop-on-error behavior;
+   - bounded intermediate result storage;
+   - no plugin-controlled detached goroutines or hidden retries;
+   - clear workflow result containing each step outcome.
+
+   The primitive must remain optional. A plugin can still implement its own logic by calling typed SDK methods. Do not add a generic scripting/eval engine or arbitrary Telegram method dispatcher.
+
+10. Define result lifetime and privacy behavior. Message text, captions, media handles, usernames, and peer metadata must be bounded and redacted from logs/metrics by default. Results must not remain in memory longer than the configured retention window. Plugin unload, restart, uninstall, account shutdown, and daemon shutdown must release pending result and idempotency state.
+
+11. Enforce permissions immediately before every action and every retry/dedup lookup. Validate action IDs, idempotency keys, batch sizes, result sizes, media references, reply targets, callback data, and all nested collections. A plugin cannot smuggle a new operation through `ClientOperation`, arbitrary values, or malformed JSON.
+
+12. Add observability with bounded labels. Track action count, latency, queue delay, result state, retryability, duplicate-hit count, outcome-unknown count, partial-batch count, FloodWait, permission rejection, unsupported operation, media failure, and cleanup failure. Never label metrics with action IDs, message IDs, chat IDs, usernames, media handles, text, callback payloads, or arbitrary plugin input.
+
+13. Document the contract:
+   - protocol action/result DTOs and error codes;
+   - idempotency key scope, retention, eviction, and crash behavior;
+   - ambiguous outcome handling;
+   - sequential batch and partial failure semantics;
+   - supported result fields per Telegram operation;
+   - media attachment behavior;
+   - Go/Python SDK examples for a demotivator and a text/media synthesizer;
+   - unsupported operations and migration guidance for plugins that previously assumed fire-and-forget success.
+
+   Update only necessary files in `docs/`, `README.md`, the compatibility matrix, and milestone status. Do not claim transactional Telegram actions or exactly-once delivery.
+
+TESTING
+Add protocol golden and malformed-input tests for Action, ActionResult, batch requests/results, idempotency keys, outcome-unknown states, and structured errors. Add Go tests for sequential batches, partial failures, stop-on-error, duplicate keys, retention/eviction, plugin/account isolation, restart behavior, permission checks, result bounds, and concurrent callers. Add fake-live and recorded adapter tests for returned message IDs, media results, FloodWait, timeout-after-acceptance, disconnect, missing message, and unsupported operations. Add supervised local-socket end-to-end tests for Go and Python SDKs. Add workflow fixtures for a media-aware demotivator and a bounded synthesizer pipeline.
+
+Run at minimum:
+
+```text
+make fmt-check
+make lint
+make test
+make test-race
+make build
+go test -run '^$' -bench . -benchmem ./...
+```
+
+ACCEPTANCE CRITERIA
+1. Supported send/reply/edit/delete/media actions return real typed results whenever the adapter can prove them.
+2. No action reports fabricated success or fabricated message IDs.
+3. Duplicate idempotency requests do not repeat a Telegram mutation within the documented retention window.
+4. Ambiguous network failures are represented explicitly and are not retried blindly.
+5. Batches return per-action outcomes and document partial execution; no Telegram transaction is falsely implied.
+6. Go and Python plugins can compose bounded multi-step workflows for userbots, demotivators, synthesizers, and media converters without raw Telegram imports.
+7. Result, deduplication, callback, media, queue, RPC, and workflow state remain bounded and are cleaned on unload, restart, disconnect, and shutdown.
+8. Existing command, watcher, inline/callback, storage, HTTP, media, package, and lifecycle behavior remains compatible.
+9. Compatibility and operations documentation accurately describe retry, idempotency, ambiguity, and partial-failure behavior.
+
+DELIVERABLE
+Implement the protocol, core, adapter, SDK, sidecar, tests, examples, benchmarks, and necessary documentation. Report changed files, result DTOs, supported operation mappings, idempotency scope and limits, ambiguous-outcome behavior, batch semantics, workflow limits, cleanup guarantees, unsupported cases, and all verification commands.

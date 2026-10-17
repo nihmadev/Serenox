@@ -1,0 +1,23 @@
+apiVersion: serenox.app/v1
+kind: Application
+metadata:
+  name: personal-serenox
+  version: 1
+runtime:
+  dataDir: ./data
+  configMode: production
+  logLevel: info
+  shutdownTimeout: 20s
+telegram:
+  enabled: true
+  apiId: ${SERENOX_TELEGRAM_API_ID}
+  apiHash: ${SERENOX_TELEGRAM_API_HASH}
+  sessionFile: telegram.session.json
+storage:
+  backend: file
+  path: state.json
+services: {}
+plugins: []
+release:
+  retainVersions: 3
+  healthTimeout: 30s

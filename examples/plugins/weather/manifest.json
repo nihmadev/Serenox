@@ -1,0 +1,26 @@
+{
+  "format": "serenox.plugin.package/v1",
+  "id": "example.weather",
+  "name": "Weather",
+  "version": "1.1.0",
+  "description": "Read-only weather lookup through host HTTP",
+  "category": "go-executable",
+  "protocol": {"min": "1.0", "max_exclusive": "2.0"},
+  "core": {"min": "0.1.0", "max_exclusive": "1.0.0"},
+  "entrypoints": [{"os": "linux", "arch": "amd64", "path": "bin/weather-plugin"}],
+  "capabilities": ["commands", "http"],
+  "permissions": ["telegram.reply", "network.http.read"],
+  "network": {
+    "origins": [
+      {"scheme": "https", "host": "api.open-meteo.com", "name": "open-meteo"},
+      {"scheme": "https", "host": "geocoding-api.open-meteo.com", "name": "open-meteo-geocoding"}
+    ],
+    "max_response_bytes": 65536,
+    "max_redirects": 0,
+    "request_timeout_ms": 10000,
+    "max_concurrent": 2,
+    "requests_per_second": 0.2,
+    "burst": 2
+  },
+  "files": []
+}

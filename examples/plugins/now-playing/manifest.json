@@ -1,0 +1,14 @@
+{
+  "format": "serenox.plugin.package/v1",
+  "id": "profile.nowplaying",
+  "name": "Now Playing",
+  "version": "1.0.1",
+  "description": "Shows the track playing on this desktop (MPRIS over D-Bus) in the profile last name",
+  "category": "go-executable",
+  "protocol": {"min": "1.0", "max_exclusive": "2.0"},
+  "core": {"min": "0.1.0", "max_exclusive": "1.0.0"},
+  "entrypoints": [{"os": "linux", "arch": "amd64", "path": "bin/now-playing"}],
+  "capabilities": ["commands", "storage", "telegram.profile"],
+  "permissions": ["storage.read", "storage.write", "telegram.reply", "telegram.profile.write"],
+  "files": []
+}

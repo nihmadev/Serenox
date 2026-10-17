@@ -1,0 +1,640 @@
+TASK: Implement the flagship Autopilot workflow plugin and its complete product documentation for Serenox.
+
+Repository: /home/nihmadev/Serenox
+
+Read the current repository before editing: architecture and compatibility
+documents, all earlier prompts in `prompts/`, plugin package and activation
+code, protocol v1 DTOs and validators, Go SDK, examples, executor and plugin
+supervisor, action results and idempotency, storage, Jobs API, host HTTP,
+control-bot bridge, watcher filters, observability, recorded transport, build
+scripts, and related tests. Preserve existing user changes. Do not rewrite
+unrelated components and do not assume that a documented API is live or
+complete until its implementation and tests have been inspected.
+
+PRIMARY DELIVERABLE
+
+Create a production-quality flagship Go plugin under:
+
+```text
+examples/plugins/autopilot/
+```
+
+Use plugin ID `example.autopilot` and package it as a supervised
+`go-executable` `.srnx` artifact. Autopilot is a bounded workflow engine and
+failure-recovery demonstration, not a generic script runner. It must combine
+real Serenox capabilities in one coherent product:
+
+- owner commands and watcher-triggered workflows;
+- durable one-shot/calendar/interval jobs;
+- namespaced atomic storage;
+- typed Telegram actions and real action results;
+- optional allowlisted host HTTP steps;
+- optional owner-only control-bot dashboard and approvals;
+- explicit workflow/run state, audit history, cancellation, and recovery;
+- crash, interrupted-run, overload, permission, and rollback demonstrations;
+- bounded resources, deterministic tests, packaging, and complete docs.
+
+The plugin must be useful on its own, but its second purpose is to prove why
+Serenox's supervised plugin model is materially different from a small
+in-process userbot module. A user must be able to demonstrate that the plugin
+can exit or fail while the Serenox daemon and other plugins remain available,
+then inspect the recovered/interrupted workflow state after restart.
+
+MODULARITY REQUIREMENT
+
+This is a complex example, not permission to create one giant `main.go`.
+
+- Do not add or leave behind an implementation source file larger than 450
+  non-blank lines. Split by responsibility before reaching that size.
+- Keep individual functions below 80 non-blank lines where practical.
+- Separate metadata/lifecycle, command parsing, workflow specifications,
+  validation, execution/state transitions, persistence, jobs, HTTP connectors,
+  control-bot UI, rendering/templates, chaos demo, and tests.
+- Use narrow interfaces for clock, storage, jobs, actions, HTTP, and process
+  exit behavior so tests never need Telegram, the network, or a real process
+  crash.
+- Keep every implementation slice buildable and tested.
+- Do not create a private scheduler, worker pool, retry daemon, detached
+  goroutine tree, or second persistence engine. Use Serenox host services.
+
+PRODUCT INTENT
+
+Autopilot lets the owner describe small, finite automations such as:
+
+```text
+message matches a bounded rule
+  -> record a run
+  -> send a notification or call one approved connector
+  -> wait through a durable Serenox job
+  -> request owner approval through the control bot
+  -> continue, cancel, or fail explicitly
+  -> retain a bounded audit summary
+```
+
+Representative uses include delayed reminders, approval flows, daily digests,
+incident follow-ups, safe webhook/API workflows, and demonstrations of restart
+recovery. Autopilot is deliberately not Zapier, n8n, a programming language,
+or a shell hidden inside Telegram.
+
+The ordinary plugin must work without a control bot and without external
+network access. Control-bot and HTTP functionality are optional enhancements
+that degrade to explicit `unavailable` states. The default built-in demo must
+remain deterministic and useful in recorded mode.
+
+NON-GOALS AND HARD BOUNDARIES
+
+Do not add any of the following:
+
+- arbitrary Go, Python, JavaScript, Lua, template expression, or shell
+  execution;
+- `eval`, `exec`, runtime compilation, runtime package installation, raw
+  subprocess commands, or user-supplied binaries;
+- arbitrary Telegram, Bot API, gotd, Pyrogram, Telethon, SQL, Redis, S3,
+  filesystem, socket, or `net/http` access;
+- arbitrary URLs supplied at workflow execution time;
+- unbounded cron syntax, loops, recursion, backward workflow jumps, dynamic
+  goroutines, hidden retries, or unbounded fan-out;
+- cross-plugin invocation or access to another plugin's state/jobs;
+- exactly-once claims for Telegram or HTTP mutations;
+- secrets in workflow definitions, audit events, logs, metrics, job payloads,
+  commands, or documentation fixtures;
+- changes to the plugin protocol merely to make the example look complete.
+
+Autopilot must use only the typed, permission-checked SDK surface. If a needed
+operation is absent or partial, either design a clear degraded behavior or make
+the smallest generally useful SDK/core fix with focused tests and documentation.
+Any core change must be justified independently of Autopilot and must not add a
+plugin-specific escape hatch.
+
+REQUIRED WORK
+
+1. Audit the current supported surface before coding.
+
+   Trace and record:
+
+   - Go plugin metadata, lifecycle, dispatch, job handlers, and host services;
+   - command, watcher, callback, inline, and control-command request shapes;
+   - storage read/write/batch behavior and current size/cardinality limits;
+   - job create/update/trigger/list/inspect/delete semantics and restore rules;
+   - user-session and control-bot action/result paths;
+   - host HTTP origin policy, methods, limits, and ambiguous write outcomes;
+   - supervisor restart/circuit behavior and what a plugin process exit does;
+   - recorded transport and package preflight/pack/verify/install workflows.
+
+   Do not infer support from a DTO alone. Mark every Autopilot feature as
+   verified, partial, optional, or unsupported and keep the final docs honest.
+
+2. Define a finite versioned workflow model.
+
+   Implement a plugin-local specification such as `autopilot.workflow/v1` with
+   explicit, bounded fields. The exact Go names may follow repository style,
+   but the model must contain:
+
+   - stable workflow ID, display name, description, enabled state, revision,
+     created/updated timestamps, and definition version;
+   - exactly one trigger definition;
+   - a finite ordered list or acyclic forward-only graph of typed steps;
+   - owner/account binding supplied by the host context rather than user text;
+   - optional concurrency, cooldown, and run-retention policy within strict
+     plugin limits;
+   - explicit validation errors with field paths;
+   - canonical serialization suitable for durable storage and tests.
+
+   Suggested default ceilings:
+
+   - at most 32 active workflow definitions;
+   - at most 16 steps per workflow;
+   - at most 32 state transitions per run;
+   - at most 64 retained runs and 256 audit summaries in total;
+   - workflow names up to 64 UTF-8 bytes and descriptions up to 256 bytes;
+   - definition size up to 32 KiB;
+   - run context up to 16 KiB;
+   - rendered action text up to the lower of Telegram and protocol limits;
+   - no more than one waiting job and one waiting approval per run.
+
+   Use stricter values when required by the actual manifest/SDK limits. Put all
+   effective limits in one validated policy object and document them.
+
+3. Implement a deliberately finite trigger catalog.
+
+   Support coherent triggers that can be implemented using current Serenox
+   APIs, for example:
+
+   - manual trigger through an owner command;
+   - incoming or outgoing message watcher with bounded combinations of exact,
+     prefix, suffix, contains, and Go RE2-compatible regular expression match;
+   - optional chat/sender scope when the current event DTO supports it;
+   - one-shot scheduled trigger;
+   - fixed-delay/fixed-rate or calendar trigger with explicit IANA timezone.
+
+   Compile and validate regular expressions once per workflow revision. Bound
+   expression length and count. Dynamic workflow matching may happen inside one
+   declared watcher when handler metadata cannot change at runtime, but the
+   watcher and in-memory index must remain bounded and must reject commands by
+   default to prevent feedback loops.
+
+   A workflow must not trigger recursively from its own generated message. Use
+   host-provided direction/source metadata plus an explicit run marker or a
+   bounded deduplication strategy. Do not hide recursion prevention in message
+   text visible to users.
+
+4. Implement a finite typed step catalog.
+
+   At minimum implement useful subsets of:
+
+   - `notify`: send or reply through the user-session action channel;
+   - `wait`: suspend through a persistent one-shot host job;
+   - `approval`: request an owner decision through the attached control bot;
+   - `http`: make a bounded request to a named connector whose exact origin is
+     declared in the signed package manifest;
+   - `set`: assign a bounded JSON scalar/object value to the run context;
+   - `condition`: select a forward-only success/failure branch using finite
+     comparisons, never an expression evaluator;
+   - `complete` and `fail`: terminate with an explicit summary.
+
+   Steps must not jump backward. Validate that the graph is acyclic and that
+   every path terminates within the transition limit. A step may select only a
+   higher step index or a terminal state. Do not implement loops through jobs,
+   callbacks, conditions, or workflow-to-workflow invocation.
+
+5. Implement safe bounded template rendering.
+
+   Templates may substitute only documented fields such as:
+
+   ```text
+   {{workflow.id}}
+   {{run.id}}
+   {{message.text}}
+   {{message.chat_id}}
+   {{http.status}}
+   {{approval.decision}}
+   {{vars.name}}
+   ```
+
+   Use an explicit parser and allowlist, not Go `text/template` functions that
+   could grow into a programming surface. Reject unknown variables, malformed
+   braces, excessive expansion, recursive substitution, and non-scalar values
+   where text is required. Escape/render Telegram text according to the action
+   parse mode and cap the final UTF-8 byte length.
+
+6. Define workflow run and state-transition semantics.
+
+   A run must have at least:
+
+   - bounded opaque run ID;
+   - workflow ID and immutable workflow revision snapshot/digest;
+   - state: pending, running, waiting_job, waiting_approval, completed, failed,
+     cancelled, interrupted, or another documented finite enum;
+   - current step/transition count;
+   - bounded context and source summary;
+   - created, updated, started, and finished timestamps as applicable;
+   - expected job/approval identity where waiting;
+   - bounded last error code and safe summary;
+   - action/idempotency references sufficient for reconciliation without
+     storing Telegram message bodies or secrets.
+
+   Every transition must validate the expected state and revision before
+   persistence. Duplicate job delivery, callback replay, repeated Telegram
+   updates, or stale commands must not advance a run twice. Concurrent
+   cancel/approve/job-complete operations must resolve deterministically.
+
+7. Implement durable storage and recovery.
+
+   Store workflow definitions, runs, indexes, and audit summaries only through
+   namespaced host storage. Keep a documented schema version. Use batch/atomic
+   operations when the existing storage API supports them; otherwise design a
+   serialized mutation coordinator and explicit recovery invariant.
+
+   On plugin start/restart:
+
+   - validate stored schema and bounded cardinality before publishing ready;
+   - rebuild only bounded derived indexes;
+   - reconcile waiting runs with host job status;
+   - mark a run that was actively executing during process exit as
+     `interrupted`, never silently completed;
+   - preserve waiting jobs/approvals only when their host-side identity is
+     still valid and documented to survive;
+   - expire stale approvals and runs deterministically;
+   - never replay an ambiguous HTTP or Telegram mutation automatically;
+   - make manual retry create an explicit new attempt/transition with a new
+     operation identity where safe.
+
+   Corrupt, oversized, unknown-version, or internally inconsistent state must
+   fail closed with actionable recovery instructions. Do not discard all state
+   silently.
+
+8. Use the first-class Jobs API for all delayed and scheduled behavior.
+
+   Declare explicit job handlers for at least:
+
+   - workflow scheduled trigger;
+   - resume after `wait`;
+   - approval expiration;
+   - bounded retention/cleanup.
+
+   Job payloads should contain only stable workflow/run IDs, expected revision,
+   and minimal operation metadata. Do not place message bodies, definitions,
+   HTTP responses, secrets, or audit histories into job payloads. Use the
+   smallest sensible max runtime and overlap policy. Rejected, missed,
+   interrupted, cancelled, or stale jobs must produce explicit run/audit state.
+
+   Never call `time.AfterFunc`, create one timer/goroutine per workflow, or use
+   an internal ticker as a substitute for persistent jobs.
+
+9. Implement typed HTTP connectors without turning Autopilot into a proxy.
+
+   Define a small connector catalog in plugin configuration/code. A workflow
+   references a connector by alias, never by arbitrary URL. Each connector
+   fixes or strictly bounds:
+
+   - approved HTTPS origin and optional fixed path prefix;
+   - allowed methods;
+   - request/response byte limits and timeout;
+   - permitted headers and content type;
+   - whether the operation is read-only or mutating;
+   - which response fields may be copied into bounded run context.
+
+   The package manifest must contain exact signed origin allowlists. Include a
+   credential-free deterministic demo connector only when useful; ordinary
+   tests must use a fake host HTTP service and never contact the public
+   internet. Do not place API tokens in workflow definitions. If the current
+   plugin configuration has no reviewed secret value mechanism, document
+   authenticated connectors as unsupported rather than storing plaintext.
+
+   Do not automatically retry HTTP writes. A timeout after a possibly accepted
+   write becomes an ambiguous/outcome-unknown failure requiring inspection or
+   explicit manual action.
+
+10. Implement an optional control-bot dashboard and approvals.
+
+   Explicitly expose only owner-safe Autopilot control commands through current
+   control-command metadata. Provide bounded views for:
+
+   - health and paused/running status;
+   - workflow list and one-workflow details;
+   - active/waiting/recent runs;
+   - approve, reject, cancel, retry-safe, pause, resume, and refresh actions;
+   - queue/job/error counters when available without exposing sensitive data.
+
+   Mutating control actions require an explicit button press or confirmation;
+   typing an inline query must not execute them. Callback data must be opaque,
+   owner-bound, plugin/account/run-bound, expiring, single-use where required,
+   and below Bot API limits. Callback replay or a press from another actor must
+   not mutate state.
+
+   If no control bot is attached, ordinary `.autopilot` commands remain fully
+   usable and approval steps enter a documented unavailable/failure or
+   command-based fallback state. Do not fabricate a successful approval.
+
+11. Provide a coherent owner command UX.
+
+   Implement and document a discoverable command family. Adapt exact names to
+   current command-registration constraints, but support equivalent behavior:
+
+   ```text
+   .autopilot help
+   .autopilot status
+   .autopilot pause
+   .autopilot resume
+   .autopilot demo install
+   .autopilot demo run
+   .autopilot cleanup
+
+   .flow list
+   .flow show <workflow-id>
+   .flow enable|disable <workflow-id>
+   .flow trigger <workflow-id>
+   .flow cancel <run-id>
+   .flow retry <run-id>
+   .flow runs [workflow-id]
+   .flow audit [run-id]
+   .flow export <workflow-id>
+   .flow import <strict-json-definition>
+   .flow delete <workflow-id> confirm
+   ```
+
+   Import must use strict bounded JSON with unknown-field rejection and the
+   versioned workflow schema. Export must be canonical, redacted, bounded, and
+   suitable for documentation examples. Commands must have concise usage
+   errors and never dump unbounded definitions, contexts, HTTP bodies, or
+   internal stack traces into Telegram.
+
+12. Include built-in deterministic demo workflows.
+
+   `.autopilot demo install` should idempotently install a small set such as:
+
+   - delayed reminder: manual trigger -> notify -> wait -> notify -> complete;
+   - approval: manual trigger -> approval -> approved/rejected notification;
+   - bounded message rule: matching Saved Messages text -> record -> notify;
+   - optional connector: manual trigger -> approved fake/read-only HTTP call ->
+     summarize status -> complete;
+   - scheduled digest/heartbeat using a host calendar or fixed-delay job.
+
+   The default demo must work without external network. Features requiring
+   live Telegram, an attached control bot, or HTTP must say so explicitly and
+   be independently skippable. Re-running demo installation must not duplicate
+   workflows or jobs.
+
+13. Add an explicit, safe chaos/failure demonstration.
+
+   Provide commands equivalent to:
+
+   ```text
+   .autopilot chaos status
+   .autopilot chaos fail-job confirm
+   .autopilot chaos interrupt-run confirm
+   .autopilot chaos exit-process confirm
+   ```
+
+   Chaos operations must be disabled by default through typed plugin config and
+   require both enablement and an exact confirmation token. They must affect
+   only the Autopilot plugin process/state prepared for that demo. Never crash,
+   signal, stop, or corrupt the Serenox daemon, another plugin, Telegram
+   transport, host storage, or arbitrary operating-system process.
+
+   Inject process exit through a narrow testable interface. The real
+   `exit-process` path may terminate the plugin executable with a documented
+   non-zero status only after a prepared run has been durably marked so that
+   restart recovery can show `interrupted`. Do not use `panic` as ordinary
+   control flow and do not intentionally corrupt files.
+
+   Document the expected demonstration:
+
+   1. start a prepared workflow run;
+   2. explicitly exit the Autopilot process;
+   3. verify the daemon and `.ping` remain available;
+   4. wait for supervisor restart/backoff;
+   5. inspect the run as interrupted/reconciled;
+   6. resume only through a safe explicit owner action;
+   7. inspect bounded restart/run/audit evidence.
+
+14. Define action-result and idempotency behavior.
+
+   Every Telegram/control-bot/HTTP mutation must have a stable operation ID and
+   explicit result handling. Distinguish:
+
+   - accepted/queued from completed;
+   - success from failure, skipped, cancelled, and outcome unknown;
+   - safe retry from unsafe or ambiguous retry;
+   - stale duplicate invocation from a new attempt.
+
+   Do not advance past a required mutation merely because a request was
+   serialized. Do not claim a workflow is transactional. Audit summaries must
+   record stable result categories, not raw response bodies or sensitive
+   Telegram data.
+
+15. Enforce capabilities, permissions, and package policy.
+
+   Declare the minimum actual capabilities and permissions in
+   `manifest.json`, likely including only the subsets used from commands,
+   watchers, jobs, storage, user-session actions, control-bot UI, and host HTTP.
+   Remove optional permissions when the corresponding feature is not built.
+
+   Use exact network origins and finite resource limits. Do not use wildcard
+   origins, broad subdomain access, cleartext HTTP, ambient proxies, runtime
+   downloads, or undeclared client operations. Package preflight must reject a
+   metadata/manifest mismatch. Clearly document that `.srnx` signatures and RPC
+   permissions are not by themselves an OS sandbox.
+
+16. Add bounded observability inside the plugin and through existing host
+   diagnostics where supported.
+
+   Track bounded counters/summaries for:
+
+   - definitions enabled/disabled and capacity;
+   - runs created/running/waiting/completed/failed/cancelled/interrupted;
+   - trigger match/reject/cooldown/deduplication;
+   - transitions, job resumes/misfires/stale deliveries;
+   - approvals requested/accepted/rejected/expired/replayed;
+   - HTTP and Telegram action result categories;
+   - state recovery, corruption, retention, and cleanup;
+   - chaos demonstrations and process restart observation when exposed.
+
+   Never use workflow/run IDs, chat/message/user IDs, message text, templates,
+   URLs, callback data, HTTP bodies, or arbitrary error text as metric labels.
+   User-facing status must be bounded and redact content by default.
+
+17. Implement lifecycle and cleanup completely.
+
+   Cover configure/start/health/stop, plugin crash/restart, package upgrade and
+   rollback, unload, uninstall, account shutdown, and daemon shutdown.
+
+   Stop must reject new runs, cancel in-flight local contexts, commit only
+   valid final/interrupted state, release callbacks, and leave durable jobs to
+   the documented core policy. No goroutine, ticker, timer, callback, job
+   declaration, RPC waiter, temporary file, HTTP request, or in-memory run may
+   survive its owner unintentionally.
+
+   A failed Autopilot upgrade must not rewrite old state into an incompatible
+   schema before activation succeeds. Define forward migration and rollback
+   compatibility for plugin-local state. Do not promise rollback across an
+   irreversible state migration without a backup/forward-recovery plan.
+
+18. Produce normal product documentation, not only API comments.
+
+   Add at least:
+
+   - `examples/plugins/autopilot/README.md`: concise quick start, commands,
+     demo, configuration, package/install instructions, and limitations;
+   - `examples/plugins/autopilot/README.ru.md`: equivalent useful Russian user
+     guide, not a machine-like one-paragraph translation;
+   - `docs/autopilot.md`: product and architecture guide explaining what
+     Autopilot is, why it was created, what problem it demonstrates, workflow
+     semantics, recovery, security boundaries, and operator guidance;
+   - focused updates to the root README/example index, plugin-development docs,
+     compatibility matrix, and milestones only when the final implementation
+     justifies them.
+
+   The documentation must answer plainly:
+
+   - What is Autopilot?
+   - Why was it created instead of another `.weather`-style example?
+   - Which Serenox architectural advantages does it demonstrate?
+   - What continues to work when Autopilot crashes?
+   - What state survives daemon/plugin restart?
+   - What is at-most-once, idempotent, ambiguous, or manually retried?
+   - Which features work in recorded mode, live Telegram, control-bot mode,
+     and with optional HTTP connectors?
+   - Which limits are hard and configurable?
+   - Why this is not arbitrary code execution or a security sandbox?
+   - How does a user create/import a workflow and run the full chaos demo?
+
+   Include a small architecture/state diagram, complete copy-paste examples,
+   a workflow JSON schema example, troubleshooting, failure modes, and a table
+   of verified/partial/unsupported features. Do not claim that equivalent
+   business logic is impossible in Hikka; explain that the demonstration is
+   about supervision, bounded execution, typed permissions, durable jobs, and
+   recovery guarantees. Do not claim that Heroku restrictions are Serenox
+   features; explain that persistent/local capabilities depend on deployment.
+
+19. Add a reproducible package and demo path.
+
+   Supply source, tests, `manifest.json`, build/package instructions, and any
+   deterministic fixtures required by the repository. Do not commit a stale
+   platform binary unless existing example policy explicitly requires and
+   verifies it. The normal developer path should include commands equivalent
+   to:
+
+   ```text
+   go test ./examples/plugins/autopilot/...
+   serenox plugin preflight --source examples/plugins/autopilot
+   serenox plugin pack --source examples/plugins/autopilot --output dist/example.autopilot-1.0.0.srnx
+   serenox plugin verify dist/example.autopilot-1.0.0.srnx
+   serenox plugin install dist/example.autopilot-1.0.0.srnx
+   ```
+
+   Adapt commands to the actual CLI. The README must not reference missing
+   files or commands.
+
+TESTING
+
+Add focused tests in separate files for:
+
+- workflow schema parsing, unknown fields, canonical round trip, size/count
+  limits, duplicate IDs, versions, and validation field paths;
+- acyclic forward-only graph validation and transition budget exhaustion;
+- trigger validation, regex compilation, matching, cooldown, deduplication,
+  self-trigger prevention, and disabled workflows;
+- safe template parsing, allowlisted variables, escaping, malformed input,
+  unknown variables, and expansion limits;
+- state-machine happy paths and every invalid/stale transition;
+- concurrent cancel/approve/job-resume resolution under the race detector;
+- storage commit failure, schema migration, corruption, restart recovery,
+  interrupted runs, bounded retention, and index rebuilding;
+- job registration, minimal payloads, duplicate/stale delivery, misfire,
+  cancellation, approval expiry, cleanup, and plugin restart;
+- action result success/failure/skipped/outcome-unknown and retry safety;
+- connector alias/origin/method/header/body/response limits, timeout,
+  malformed JSON, rejected request, and ambiguous write response;
+- control-bot actor binding, callback expiry/replay, confirmation, missing bot,
+  unavailable UI, and ordinary-command fallback;
+- command parsing, help, import/export, pagination/truncation, confirmation,
+  and redaction;
+- chaos disabled/enabled policy, confirmation, prepared durable marker,
+  injected exit, restart reconciliation, and no daemon/global side effect;
+- metadata/manifest capabilities, permissions, origins, resources, and package
+  preflight;
+- lifecycle start/stop/restart/unload/rollback cleanup and no leaked goroutines,
+  timers, RPC waiters, callbacks, jobs, or HTTP requests;
+- deterministic recorded/supervised end-to-end demos that require no Telegram,
+  Bot API token, external service, or public network.
+
+Use fake clocks and fake typed host-service interfaces. Normal tests must be
+credential-free and network-free. Live Telegram/control-bot checks, if added,
+must be explicitly opt-in, use safe disposable inputs, redact everything, and
+remain marked partial when not run.
+
+Run at minimum:
+
+```text
+gofmt -w examples/plugins/autopilot/*.go
+go test ./examples/plugins/autopilot/...
+go test -race ./examples/plugins/autopilot/...
+go test ./...
+uv run --project sidecar/python python -m unittest discover -s sidecar/python/tests -t sidecar/python
+make fmt-check
+make lint
+make build
+serenox plugin preflight --source examples/plugins/autopilot
+serenox plugin pack --source examples/plugins/autopilot --output dist/example.autopilot-1.0.0.srnx
+serenox plugin verify dist/example.autopilot-1.0.0.srnx
+```
+
+If a repository-wide command has a known pre-existing failure, prove that the
+Autopilot change introduces no new failure, report the exact baseline and
+delta, and do not describe the whole gate as passing.
+
+ACCEPTANCE CRITERIA
+
+1. `example.autopilot` is a real installable supervised Go plugin, not a mock,
+   code sketch, documentation-only sample, or in-process special case.
+2. The default demo runs without external network or control-bot credentials
+   and exercises commands, storage, typed actions, and durable jobs.
+3. Workflows use a strict versioned finite schema with bounded triggers, typed
+   steps, an acyclic transition model, bounded context, and no code execution.
+4. Definitions, runs, waiting state, and audit summaries survive and reconcile
+   across plugin restart according to documented semantics.
+5. A prepared process-exit demo leaves the daemon responsive and recovers the
+   run as interrupted/reconcilable without automatically repeating an
+   ambiguous mutation.
+6. All waits, schedules, expiry, and cleanup use the core Jobs API; no private
+   unbounded scheduler or per-run goroutine/timer is introduced.
+7. Telegram, control-bot, storage, jobs, and HTTP operations use only typed SDK
+   services and declared least-privilege permissions.
+8. Missing control bot, unavailable HTTP, overload, stale callbacks/jobs,
+   storage failure, action ambiguity, and plugin restart produce explicit safe
+   states rather than fabricated success.
+9. Workflow/run state, definitions, transitions, callbacks, jobs, audit,
+   templates, HTTP, output, in-memory indexes, and diagnostics all have tested
+   hard bounds.
+10. Package preflight, pack, verify, installation, activation, failed upgrade,
+    rollback, unload, and shutdown preserve existing Serenox behavior and leave
+    no orphaned resource.
+11. English and Russian user documentation clearly explain what Autopilot is,
+    why it exists, how to use it, how to run the crash/recovery demo, its
+    permissions, limits, failure semantics, and unsupported cases.
+12. Documentation distinguishes verified, partial, recorded-only, live-gated,
+    and unsupported behavior and makes no exactly-once, full-Hikka, full-Bot-
+    API, Heroku, or OS-sandbox claim.
+
+DELIVERABLE
+
+Implement the Autopilot plugin source, strict workflow schema, state machine,
+triggers, typed steps, persistence/recovery, job handlers, optional connectors,
+control-bot dashboard/approvals, safe chaos demo, manifest/package flow,
+fixtures, tests, and all necessary documentation.
+
+Keep the work modular and update only related files. In the final report list:
+
+- changed files and package layout;
+- exact plugin commands and control-bot surfaces;
+- workflow schema, trigger/step catalog, and hard limits;
+- storage keys/schema and migration/recovery rules;
+- job handlers and scheduling/misfire/overlap behavior;
+- permissions, capabilities, network origins, and resource declarations;
+- action-result, idempotency, ambiguity, cancellation, and retry semantics;
+- crash/restart/rollback demonstration results;
+- recorded/live/partial/unsupported feature status;
+- package preflight/pack/verify output;
+- every verification command and its exact result;
+- any pre-existing repository failures separately from new regressions.

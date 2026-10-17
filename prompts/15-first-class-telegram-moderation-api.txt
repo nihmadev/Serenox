@@ -1,0 +1,827 @@
+TASK: Implement a broad, first-class, bounded Telegram moderation and chat-administration API for Serenox plugins.
+
+Repository: /home/nihmadev/Serenox
+
+Read the current repository before editing: all earlier prompts in `prompts/`,
+architecture and compatibility documents, protocol v1 DTOs and validators,
+typed action results and idempotency, duplex reverse RPC, permissions and
+package policy, Telegram ingress/conversion, peer and entity caches, the live
+gotd transport, recorded transport, read services, App admission/executor,
+Go SDK, Python SDK/sidecar, plugin examples, observability, lifecycle, and all
+related tests. Preserve existing user changes. Do not rewrite unrelated
+components and do not infer live support from an enum, DTO, SDK method, fake,
+or recorded fixture.
+
+PRIMARY DELIVERABLE
+
+Create a production-quality, transport-neutral moderation API that lets a
+verified Serenox plugin safely inspect moderation state and perform explicit
+administrative operations through the logged-in Telegram user session.
+
+The finished API must support serious moderation plugins, including owner-only
+commands and outgoing no-prefix watchers such as:
+
+```text
+reply to a message with "mute 1h"
+  -> resolve the replied message and its sender
+  -> inspect the chat and participant state
+  -> restrict that participant until the requested deadline
+  -> edit the owner's outgoing command into a bounded result notice
+```
+
+The example syntax is a plugin concern. The core deliverable is a broad typed
+moderation surface with exact permissions, bounded requests, typed results,
+real gotd mappings, stable errors, lifecycle cleanup, and honest verification.
+Do not special-case Russian command words, a particular plugin ID, or one
+moderation workflow inside the core.
+
+MODULARITY REQUIREMENT
+
+The API is broad, but the implementation must remain aggressively modular.
+
+- Do not add or leave behind an implementation source file larger than 450
+  non-blank lines. Split existing oversized files before adding new surface.
+- Keep functions below 80 non-blank lines where practical.
+- Split protocol models, validation, permission mapping, service routing,
+  gotd participant conversion, member mutations, administrator mutations,
+  message moderation, join requests, invite links, forum topics, settings,
+  error mapping, SDK facades, and tests by responsibility.
+- Use narrow operation-group interfaces. Do not grow `Action`,
+  `ClientOperation`, `gotd_actions.go`, `gotd_reads.go`, `actions.py`, or one
+  new `moderation.go` into a generic dispatcher.
+- Keep every vertical slice buildable and tested. A smaller verified catalog is
+  preferable to a large collection of methods that only serialize a request.
+- Do not add one goroutine, timer, worker, retry loop, cache, or lock forever
+  per chat, user, request, or plugin. Every coordinator and cache must be
+  bounded and lifecycle-owned.
+
+PRODUCT INTENT
+
+Serenox is a userbot with a supervised plugin boundary. A moderation plugin
+should be able to implement commands, no-prefix outgoing watchers, automatic
+rules, admin dashboards, audit summaries, and scheduled unmute/unban flows
+without importing gotd, Pyrogram, Telethon, or raw Telegram constructors.
+
+The core owns Telegram credentials, access hashes, request validation,
+permissions, rate/resource limits, error conversion, and transport calls. A
+plugin receives bounded DTOs and invokes explicit operations. This task must
+make moderation broad through typed domains, not through an arbitrary Telegram
+method escape hatch.
+
+NON-GOALS AND HARD BOUNDARIES
+
+Do not add any of the following:
+
+- raw gotd/TL objects, constructor IDs, access hashes, session data, API ID,
+  API hash, phone numbers, login codes, 2FA passwords, or Bot API tokens across
+  the plugin boundary;
+- arbitrary `invoke`, `raw_call`, method-name dispatch, JSON-to-TL conversion,
+  reflection-based Telegram calls, or a generic `ClientOperation.Value` blob;
+- direct plugin access to the Telegram socket/client, filesystem session,
+  network connection, Bot API, or control-bot token;
+- ownership transfer, account deletion, 2FA/password changes, session
+  management, payment operations, phone-number visibility, or other account-
+  takeover surfaces;
+- silent group migration, automatic channel/discussion rewiring, or hidden
+  multi-request scans;
+- automatic retries of ambiguous Telegram mutations;
+- exactly-once, transactional batch, or atomic mute-plus-notification claims;
+- unbounded audit-log/history scans, participant enumeration, invite creation,
+  scheduled timers, deduplication state, or diagnostic labels;
+- policy that treats any incoming user message as an owner command. Ordinary
+  command routing remains owner-only, and a no-prefix moderation trigger must
+  be an explicitly outgoing watcher implemented by a plugin.
+
+Use the installed gotd version actually pinned by the repository. If Telegram
+or gotd cannot implement an operation with a stable bounded mapping, return an
+explicit structured `unsupported` result and document the limitation. Do not
+fabricate compatibility.
+
+REQUIRED WORK
+
+1. Audit and publish the current moderation boundary before coding.
+
+   Trace:
+
+   - message/update conversion for private chats, basic groups, megagroups,
+     broadcast channels, linked discussion groups, anonymous admins, channel
+     senders, forwarded senders, service messages, and deleted messages;
+   - owner command parsing, watcher direction/reply/chat filters, and how an
+     outgoing message can be edited after a successful action;
+   - replied-message lookup and sender resolution, including unavailable,
+     hidden, anonymous, deleted, migrated, and unresolved peers;
+   - existing participant/chat read declarations versus real live-adapter
+     implementations;
+   - action validation, permission checks, batching, idempotency, typed
+     results, ambiguous outcomes, and plugin lifecycle cancellation;
+   - gotd methods and rights models available in the pinned version;
+   - peer/entity cache behavior and how user/channel access hashes are learned;
+   - recorded/fake/live verification boundaries.
+
+   Add or update a moderation implementation matrix. For every proposed
+   operation record protocol, core, gotd, recorded, Go SDK, Python SDK, tests,
+   and documentation status as `verified`, `partial`, `recorded-only`,
+   `live-gated`, or `unsupported`. Keep the matrix accurate throughout the
+   implementation.
+
+2. Define a dedicated, versioned moderation domain model.
+
+   Do not overload the provisional stringly typed `ClientOperation` structure.
+   Introduce explicit additive protocol DTOs or a new negotiated protocol
+   version if additive compatibility cannot express the contract safely.
+
+   Define finite types for at least:
+
+   - moderation operation enum;
+   - chat target and participant target;
+   - participant/member status: creator, administrator, restricted, member,
+     left, banned, pending join request, unknown;
+   - the acting account's effective administrative rights;
+   - a participant's effective rights and restrictions;
+   - administrator rights and optional bounded custom rank/title;
+   - default chat permissions;
+   - restriction deadline and permanent-state semantics;
+   - message targets and bounded message-ID batches;
+   - join-request summary;
+   - invite-link summary without leaking or logging secrets unnecessarily;
+   - forum-topic target and state;
+   - moderation request, typed result, affected peer/member/chat/message
+     summaries, stable warning list, and structured error;
+   - explicit support metadata when behavior differs between basic group,
+     megagroup, broadcast channel, and linked discussion group.
+
+   The plugin-facing rights model must not inherit Telegram's confusing
+   inverted banned-right booleans. Choose and document one unambiguous model,
+   such as explicit allowed rights with field presence or explicit denied
+   capabilities whose `true` always means denied. Preserve the difference
+   between an omitted field and an explicit false value. Conversion to
+   `tg.ChatBannedRights` belongs only inside the gotd adapter.
+
+3. Implement a broad but finite member-moderation catalog.
+
+   At minimum implement and verify where Telegram supports them:
+
+   - get one participant/member moderation state;
+   - list/search administrators, restricted members, banned members, and
+     pending join requests with bounded pages and scoped cursors;
+   - restrict a participant with an explicit rights set and optional deadline;
+   - apply an ergonomic full mute preset through the SDK, lowered into the same
+     typed restriction request rather than a separate raw Telegram method;
+   - update an existing restriction;
+   - clear restrictions/unmute and restore the documented effective defaults;
+   - ban a participant;
+   - unban a participant;
+   - remove/kick a participant with precisely documented rejoin behavior;
+   - approve and decline one join request;
+   - bounded batch approve/decline only when the Telegram method and action
+     result can represent partial/ambiguous outcomes honestly.
+
+   Define behavior for self, creator, administrator, bot, deleted user,
+   anonymous sender, channel-as-sender, non-member, already-restricted,
+   already-banned, and already-left targets. Return stable no-op or conflict
+   results where appropriate; do not collapse every state into success.
+
+4. Implement administrator-role management as a separate privilege domain.
+
+   Support, where verified:
+
+   - inspect the acting account's effective admin rights;
+   - inspect a target administrator's rights and custom rank;
+   - promote a member with an explicit least-rights set;
+   - update an administrator's rights;
+   - demote an administrator;
+   - set or clear a bounded custom admin title/rank;
+   - list administrators with stable typed summaries.
+
+   Promotion/demotion must not share a permission with ordinary mute/ban. The
+   protocol must represent each right explicitly and reject rights that do not
+   apply to the target chat kind. Never expose or implement ownership transfer.
+   Creator and self restrictions must be handled explicitly. Do not invent a
+   successful demotion when Telegram returns `USER_CREATOR`,
+   `CHAT_ADMIN_REQUIRED`, or an equivalent denial.
+
+5. Implement message-level moderation operations.
+
+   Provide typed, bounded support for:
+
+   - delete one or a bounded batch of messages with per-message results where
+     Telegram can distinguish them;
+   - delete a replied message through normal message-ID targeting;
+   - pin a message, with explicit notification/silent and one-side/both-side
+     semantics only where meaningful;
+   - unpin one message;
+   - unpin all messages only behind a distinct permission;
+   - inspect the current pinned message through the read side;
+   - optionally report content/spam only if the operation has safe, precise
+     semantics and a separate high-risk permission; otherwise keep it
+     explicitly unsupported.
+
+   Preserve the existing `telegram.delete` behavior for a plugin deleting its
+   own command/message. Administrative bulk deletion and pin management need
+   separate moderation permissions. Define basic-group, megagroup, channel,
+   private-dialog, and topic behavior instead of routing them blindly through
+   one Telegram method.
+
+6. Implement bounded chat moderation settings.
+
+   Support a verified subset of:
+
+   - read and update default chat permissions;
+   - read and update slow mode;
+   - read and update protected-content/no-forward state if gotd and Telegram
+     expose it coherently;
+   - enable/disable join requests when representable without managing invite
+     secrets implicitly;
+   - read available reactions and update allowed reactions only with an
+     explicit typed set;
+   - read moderation-relevant chat flags such as megagroup, broadcast, forum,
+     linked discussion, participants hidden, signatures, and join-to-send;
+   - inspect linked discussion identity without automatically changing it.
+
+   General chat appearance management (title, photo, username, description)
+   may remain outside the moderation API unless it is already part of a typed
+   chat-admin surface. Do not mix unrelated branding operations into a mute
+   permission.
+
+7. Implement invite-link and join-request administration with secret-aware
+   boundaries.
+
+   If included as verified operations, support:
+
+   - create an invite with bounded name, expiry, usage limit, and optional join
+     request requirement;
+   - list only invites created/managed within a bounded query scope;
+   - edit an invite's finite settings;
+   - revoke an invite;
+   - inspect pending join requests with bounded pages;
+   - approve/decline one request and a carefully bounded batch.
+
+   Invite URLs are secrets. Return them only to the requesting authorized
+   plugin operation when Telegram provides them, never put them in logs,
+   metrics, error strings, recorded fixtures with real values, diagnostics, or
+   durable core audit data. Use a separate permission for invite creation and
+   revocation. Do not give a plugin access to unrelated exported invite links
+   merely because it can mute members.
+
+8. Implement forum-topic moderation where supported.
+
+   Add a separate typed operation group for moderation-relevant forum actions:
+
+   - inspect a topic target and state;
+   - close and reopen a topic;
+   - hide and unhide the general topic where Telegram permits it;
+   - delete a topic only behind a separate destructive permission;
+   - pin/unpin messages within a topic using explicit topic/message context.
+
+   Do not create a generic forum management API or smuggle raw update fields.
+   Basic groups and non-forum chats must reject topic operations before any
+   network mutation.
+
+9. Define correct restriction and duration semantics.
+
+   The public contract must specify:
+
+   - UTC Unix milliseconds or another single documented time representation;
+   - `0`/absent/permanent semantics without ambiguity;
+   - allowed minimum/maximum deadlines and Telegram's effective permanent
+     thresholds;
+   - behavior when the deadline is in the past;
+   - which rights are independently representable by the pinned Telegram
+     layer and which rights imply others;
+   - media sub-rights, stickers/GIFs/games/inline bots, polls, links/previews,
+     invites, pinning, topic changes, voice/video messages, and other rights
+     supported by the installed schema;
+   - how inherited default chat permissions combine with participant-specific
+     restrictions;
+   - what `unmute` restores and whether it clears only the explicit
+     participant restriction or changes chat defaults.
+
+   SDK convenience helpers such as `mute(duration=...)`, `read_only`, and
+   `media_only` must lower to one validated explicit rights DTO. Do not maintain
+   a second semantics path for presets.
+
+10. Resolve chats, users, replies, and access hashes safely.
+
+   A plugin must be able to target a participant by:
+
+   - numeric user ID already present in a bounded DTO;
+   - sender of a replied message;
+   - public username through the existing typed resolver when supported;
+   - participant DTO returned by a scoped moderation read.
+
+   The core must resolve the chat and participant into gotd inputs without
+   exposing or fabricating access hashes. Reuse the bounded peer/entity cache,
+   but add a bounded explicit lookup when a legitimate target is not cached and
+   Telegram provides a safe method. Document backend-call budgets, cache
+   ownership, expiry/eviction, migrations, stale hashes, and errors.
+
+   Anonymous-admin posts, channel senders, hidden forwarded identities,
+   service messages without a participant, and deleted users must never be
+   mistaken for an ordinary target. A reply helper should return a stable
+   `target_unavailable`/`anonymous_sender`/`channel_sender` error before a
+   mutation when no safe user target exists.
+
+11. Add granular capabilities and least-privilege permissions.
+
+   Define an explicit moderation capability and granular permissions, with
+   exact names following repository conventions. At minimum distinguish:
+
+   - read chat moderation state;
+   - read participants/admins/restricted/banned members;
+   - restrict/unrestrict members;
+   - ban/unban/kick members;
+   - promote/demote/change admin rights;
+   - administrative message deletion;
+   - pin/unpin and destructive unpin-all;
+   - update default permissions/settings/slow mode;
+   - inspect/manage join requests;
+   - inspect/create/edit/revoke invite links;
+   - close/reopen topics and destructive topic deletion.
+
+   Enforce permissions at package validation, activation/metadata agreement,
+   SDK/RPC admission, immediately before adapter invocation, and on every
+   idempotency/deduplication lookup. A plugin with `telegram.reply` or
+   `telegram.delete` must not inherit member-administration rights. A plugin
+   with mute permission must not promote admins, revoke invites, delete topics,
+   or unpin all messages.
+
+   Update preflight, receipts, manifests, controller checks, tests, and
+   documentation. Permission names, operation mappings, and capability
+   requirements must have one authoritative table and exhaustive tests.
+
+12. Build a dedicated core moderation service.
+
+   The service must own:
+
+   - request validation and operation routing;
+   - capability/permission checks;
+   - chat-kind and target-kind preconditions;
+   - deadlines, cancellation, concurrency and rate limits;
+   - typed adapter interfaces grouped by domain;
+   - result-size accounting and structured error mapping;
+   - bounded idempotency integration;
+   - optional per-account/chat/participant ordering where needed to prevent
+     concurrent stale restrict/unrestrict operations from racing silently;
+   - lifecycle cancellation and cleanup.
+
+   Do not put moderation policy inside the Python sidecar and do not let each
+   SDK reimplement rights validation. The authoritative validation must run in
+   the Go core even when the SDK already validates ergonomically.
+
+   If keyed serialization is introduced, cap the number of keys, waiters, wait
+   duration, and memory; remove idle entries; cancel waiters on plugin/account
+   shutdown; and prove under the race detector that one noisy chat cannot
+   starve unrelated commands or plugins.
+
+13. Implement real gotd adapter mappings in narrow files.
+
+   Use the pinned gotd API and map typed operations to the correct Telegram
+   methods for basic groups, megagroups, and broadcast channels. At minimum
+   inspect and use the applicable methods around:
+
+   - channel participant/banned-right editing;
+   - administrator-right editing;
+   - participant/admin/banned queries;
+   - message deletion and pinning;
+   - default banned rights and slow mode;
+   - join requests and invite administration;
+   - forum topic state;
+   - basic-group-specific methods where Telegram still supports them.
+
+   The exact gotd method list must come from the installed generated API, not
+   memory or another library's names. Define small internal interfaces so unit
+   tests do not need a live Telegram client.
+
+   Every adapter method must:
+
+   - honor context cancellation/deadline;
+   - have a finite Telegram-call budget;
+   - update the bounded peer/entity cache only from validated server entities;
+   - convert inverted rights correctly and round-trip them in tests;
+   - return only bounded protocol DTOs;
+   - classify known Telegram RPC errors without leaking raw sensitive values;
+   - never retry an ambiguous mutation automatically;
+   - avoid hidden participant/history scans;
+   - report unsupported chat kinds and schema gaps explicitly.
+
+14. Define typed results, no-op, partial, and ambiguous outcomes.
+
+   Reuse and extend the existing action-result contract rather than creating
+   incompatible success booleans. A moderation result must identify:
+
+   - operation and action/request ID;
+   - success, failure, skipped/no-op, partial, or outcome-unknown state;
+   - affected chat and target IDs;
+   - resulting participant/admin/chat/topic state when Telegram proves it;
+   - server update/date metadata when safely available;
+   - stable structured error, retryability, and flood-wait duration;
+   - bounded per-item results for supported batches;
+   - warnings when Telegram normalizes a deadline or rights combination.
+
+   Do not fabricate the resulting member state from the requested state. When
+   Telegram acknowledges a mutation but does not return enough data, return a
+   successful acknowledgement without an invented snapshot, or perform at
+   most one documented bounded verification read when safe. A transport loss
+   after possible server acceptance must be `outcome_unknown`.
+
+   Mute plus notification/edit is sequential, not atomic. If mute succeeds and
+   editing the command fails, report the moderation success separately. Do not
+   roll back a mute merely because the notification failed.
+
+15. Integrate idempotency, replay safety, and scheduled reversals.
+
+   Every mutating moderation request may carry a bounded idempotency key scoped
+   by plugin, account, operation, chat, target, and retention window. Duplicate
+   keys must return the original result without reapplying the mutation while
+   retained. Define eviction, restart behavior, result-size limits, and
+   ambiguous outcomes consistently with the existing action pipeline.
+
+   Do not automatically schedule an unmute/unban timer inside the moderation
+   service. A plugin that wants a future reversal must use the typed durable
+   Jobs API and store only the minimal target, expected policy/revision, and
+   idempotency identity. Provide an SDK/documentation example showing a
+   duration-based mute whose Telegram deadline is authoritative and an
+   optional durable follow-up job used only for notification/reconciliation.
+
+   Stale scheduled reversals must not clear a newer restriction. Provide an
+   optional expected-state token/digest or document a bounded verification
+   pattern that detects policy changes before unrestricting. Never claim
+   exactly-once scheduled moderation.
+
+16. Provide Go SDK and Python SDK/sidecar parity.
+
+   Expose ergonomic typed groups such as:
+
+   ```text
+   client.moderation.members
+   client.moderation.admins
+   client.moderation.messages
+   client.moderation.settings
+   client.moderation.join_requests
+   client.moderation.invites
+   client.moderation.topics
+   ```
+
+   Exact naming may follow existing SDK conventions, but both SDKs must expose
+   equivalent operation and result semantics. Include:
+
+   - typed rights, restrictions, durations/deadlines, member states and pages;
+   - `get`, bounded `list/search`, `restrict`, `mute`, `unmute`, `ban`,
+     `unban`, and `kick` helpers;
+   - promote/update/demote helpers with explicit admin rights;
+   - administrative delete/pin/unpin helpers;
+   - settings, join-request, invite, and topic groups for verified operations;
+   - structured exceptions/errors carrying code, operation, retryability,
+     flood-wait, and outcome-unknown state;
+   - async/context cancellation and deadlines;
+   - no raw request, method string, arbitrary parameter map, or transport
+     escape hatch.
+
+   Improve the Python `Message` compatibility object with a documented
+   read-only `reply_to_message_id` property and a typed helper to fetch the
+   replied message/target when appropriate. Do not require plugin authors to
+   reach into `message.dto` for ordinary reply moderation.
+
+17. Support command and no-prefix watcher ergonomics without weakening owner
+   authentication.
+
+   Add a focused example plugin or supervised fixture demonstrating both:
+
+   ```text
+   .mute 1h        # registered owner command used as a reply
+   mute 1h         # exact outgoing, reply-only, group-only watcher syntax
+   unmute
+   ban spam
+   kick
+   ```
+
+   The no-prefix form must:
+
+   - be implemented by an explicitly outgoing watcher;
+   - require a reply for member-targeted operations unless an explicit safe
+     target argument is supported;
+   - use exact token parsing, Unicode case normalization as appropriate, and
+     bounded arguments;
+   - reject incoming messages, forwarded identities, ambiguous senders,
+     unsupported chats, missing duration, excessive duration, and extra text;
+   - edit only the owner's outgoing trigger after the moderation result;
+   - distinguish moderation success from notification/edit failure;
+   - never make the core reserve English or Russian trigger words.
+
+   Include a neutral default language and optional Russian examples such as
+   `мут`, `размут`, `бан`, and `кик`, but keep localization entirely in the
+   example plugin. Tests must prove that another user's incoming `мут` cannot
+   trigger a mutation.
+
+18. Extend recorded and fake transports comprehensively.
+
+   Add deterministic credential-free fixtures for:
+
+   - creator, administrator, member, restricted, banned, left, bot, deleted,
+     anonymous-admin, and channel-sender participants;
+   - basic group, megagroup, broadcast channel, forum, linked discussion, and
+     migrated/unsupported chats;
+   - every claimed mutation's success, no-op, denial, partial, flood-wait,
+     disconnect, timeout-after-acceptance, and unsupported result;
+   - rights and restriction conversion round trips;
+   - permanent, future, past, minimum, maximum, and normalized deadlines;
+   - missing/stale access hashes and bounded resolver refresh;
+   - idempotency hits, eviction, plugin/account/chat isolation, and ambiguous
+     mutation outcomes;
+   - invite secret redaction;
+   - join-request and participant pagination/cursor scope attacks;
+   - simultaneous mute/unmute and promote/demote races;
+   - mute success followed by command-edit failure.
+
+   Recorded mode must never contain real invite links, user data, credentials,
+   or session-derived values. Recorded support alone must not be labelled live
+   verified.
+
+19. Add moderation-specific limits, fairness, and abuse resistance.
+
+   Define and test finite limits for:
+
+   - operations per action/batch and batch target count;
+   - concurrent moderation requests per plugin/account/chat;
+   - per-operation rate and burst budgets;
+   - participant/admin/banned/join-request/invite page sizes and maximum pages;
+   - total backend calls, response bytes, nested DTOs, strings, ranks, invite
+     names, reason text, and warning counts;
+   - idempotency keys/results and retention;
+   - resolver/cache entries and negative cache;
+   - per-target keyed ordering entries/waiters if used;
+   - maximum mutation deadline and request lifetime.
+
+   Administrative mutations must not starve ordinary messages, owner commands,
+   control-bot responses, reads, or other plugins. Reject invalid requests
+   before network work. Do not use chat/user/plugin-controlled values as metric
+   labels. Reasons are bounded user-facing/plugin audit text and must not be
+   sent to Telegram unless the specific Telegram operation supports them.
+
+20. Map errors into stable moderation-specific outcomes.
+
+   Classify at least:
+
+   - not authorized/disconnected;
+   - chat or participant not found;
+   - target unavailable/anonymous/channel sender;
+   - unsupported chat kind or operation;
+   - account is not an administrator;
+   - missing acting-account right;
+   - target is creator or protected administrator;
+   - invalid/inapplicable right combination;
+   - participant state conflict/already applied/no change;
+   - invalid or normalized deadline;
+   - message not found/not editable/not deletable/not pinnable;
+   - join request or invite not found/expired/revoked;
+   - topic not found/not a forum;
+   - flood wait/rate limit;
+   - timeout, cancellation, overload, conversion failure, response truncation,
+     partial result, and outcome unknown.
+
+   Preserve Telegram error details only when they are stable and safe. Do not
+   leak usernames, invite URLs, message text, access hashes, raw RPC payloads,
+   or session information in errors. SDK exceptions must expose stable codes so
+   plugins do not parse raw Telegram error strings.
+
+21. Add bounded observability and privacy-safe audit hooks.
+
+   Track bounded metrics for:
+
+   - requests and latency by operation group and stable result category;
+   - permission and capability denial;
+   - acting-right denial and protected-target denial;
+   - success, no-op, partial, outcome-unknown, flood-wait, unsupported, and
+     conversion failure;
+   - idempotency hit/miss/eviction;
+   - resolver/cache hit/miss/refresh/eviction;
+   - keyed-ordering queue/overload if present;
+   - participant page size/backend-call budget;
+   - invite redaction and cleanup failures;
+   - lifecycle cancellation and leaked-resource assertions.
+
+   Do not label metrics with plugin-controlled text, reason, rank, username,
+   invite, action/idempotency key, chat/user/message/topic ID, or raw Telegram
+   error. Diagnostics may expose configured limits and aggregated counters, not
+   a member list, moderation history, invite inventory, or message content.
+
+   If the core adds an audit hook, keep records bounded and privacy-minimal:
+   operation category, scoped actor/plugin identity, target ID only where the
+   existing security model permits it, timestamps, result category, and stable
+   error code. Do not build a second unbounded durable moderation database.
+
+22. Integrate lifecycle, upgrades, rollback, and cleanup.
+
+   Cover plugin stop/restart/unload/uninstall, account disconnect/reconnect,
+   failed activation, daemon shutdown, package upgrade, and rollback.
+
+   - cancel in-flight reads and mutations through context;
+   - preserve ambiguous mutation outcomes rather than converting cancellation
+     into failure or success;
+   - release RPC waiters, keyed-ordering entries, cursor state, temporary
+     results, cache ownership, and idempotency resources according to their
+     documented scopes;
+   - do not let a restarted plugin reuse another plugin/account's cursors or
+     idempotency entries;
+   - do not publish moderation capability until every required adapter and
+     permission mapping is ready;
+   - keep additive protocol/SDK changes compatible or negotiate a version;
+   - ensure rollback does not reinterpret rights fields with reversed meaning;
+   - leave Telegram's already-applied server state intact during local
+     shutdown; never attempt blanket rollback of moderation actions.
+
+23. Produce complete operator and plugin-author documentation.
+
+   Update the protocol/client/action catalogs, plugin-development guide,
+   compatibility matrix, architecture, security/permissions documentation,
+   Go/Python SDK references, examples, and operations/live-verification docs as
+   necessary. Documentation must clearly explain:
+
+   - the exact supported moderation operation matrix;
+   - basic group versus megagroup versus broadcast channel behavior;
+   - linked discussion groups and forum topics;
+   - required Telegram administrator rights for each operation;
+   - Serenox package permissions versus Telegram's server-side rights;
+   - restriction rights, inheritance, mute presets, deadlines, and unmute;
+   - owner commands versus explicit outgoing no-prefix watchers;
+   - reply target resolution and anonymous/channel sender limitations;
+   - action results, no-op, partial, flood-wait, and outcome-unknown behavior;
+   - sequential mute-plus-edit/notification semantics;
+   - idempotency and scheduled reversal patterns;
+   - invite-link secrecy and privacy boundaries;
+   - resource/rate limits and lifecycle cleanup;
+   - recorded, fake, live-gated, partial, and unsupported status;
+   - migration guidance from Hikka/Pyrogram/Telethon moderation calls without
+     claiming full compatibility.
+
+   Include copy-paste Go and Python examples for a typed mute, unmute, ban,
+   admin-right update, join-request decision, and a safe no-prefix outgoing
+   watcher. Examples must compile/run against the delivered SDK and must not
+   reach into internal DTO fields or import a Telegram library.
+
+24. Add an opt-in live moderation verification suite.
+
+   Normal tests must remain credential-free, network-free, and non-destructive.
+   Add a separately gated live suite only when it can use explicitly supplied
+   disposable resources:
+
+   - a disposable test account with required admin rights;
+   - a disposable megagroup/forum/channel and consenting disposable target
+     account or bot;
+   - explicit environment gates naming exact chat and target IDs;
+   - preflight checks that refuse production-looking, missing, self, creator,
+     or unresolved targets;
+   - a dry-run/read-only phase before mutations;
+   - restore/cleanup for restrictions, bans, admin rights, pins, invites,
+     topics, and settings changed by the test;
+   - bounded timeouts and a cleanup ledger that runs after partial failure;
+   - complete credential, invite, username, title, text, and ID redaction.
+
+   Do not run live moderation tests in `go test ./...`, CI, benchmarks, or soak
+   tests. Do not claim live verification for operations that were not actually
+   exercised and restored successfully.
+
+TESTING
+
+Add focused tests in separate files/packages for:
+
+- protocol golden round trips, additive compatibility, unknown fields,
+  operation-specific required/forbidden fields, and oversized nested DTOs;
+- exhaustive operation-to-capability/permission mapping and package preflight;
+- rights presence semantics, allowed/denied inversion, implication rules,
+  default-permission inheritance, and gotd round trips;
+- deadline parsing/conversion, permanent thresholds, past/future boundaries,
+  overflow, normalization, and timezone independence;
+- chat-kind applicability for private, basic group, megagroup, broadcast,
+  discussion, forum, migrated, and unsupported peers;
+- target resolution for replies, cached IDs, usernames, participants,
+  anonymous admins, channel senders, deleted users, stale access hashes, and
+  missing entities;
+- member get/list/search, restrict/update/unrestrict/mute/unmute/ban/unban/kick
+  success, no-op, denial, conflict, flood-wait, and ambiguous outcomes;
+- administrator inspect/promote/update/demote/custom-rank rights and protected
+  creator/self/admin cases;
+- administrative delete batches, pin/unpin/unpin-all, missing messages,
+  partial batches, and existing `telegram.delete` compatibility;
+- default permissions, slow mode, protected content, join-to-send, reactions,
+  and unsupported setting combinations;
+- join request list/approve/decline, replay, missing request, batches, cursors,
+  and partial results;
+- invite create/list/edit/revoke, limits, expiry, usage counts, permissions,
+  and secret redaction in logs/errors/metrics/fixtures;
+- topic close/reopen/hide/unhide/delete and non-forum rejection;
+- typed result conversion, proved versus unknown resulting state, warnings,
+  no-op, partial, and timeout-after-server-acceptance;
+- idempotency scope, duplicate calls, eviction, restart behavior, ambiguous
+  results, plugin/account/chat/target isolation, and stale scheduled reversal;
+- per-target concurrent mute/unmute and promote/demote ordering under the race
+  detector, overload, fairness, cancellation, and bounded coordinator cleanup;
+- Go/Python SDK parity, structured exceptions, cancellation, reply helpers,
+  presets, pages, and absence of raw request escape hatches;
+- owner command and outgoing no-prefix watcher fixtures, including proof that
+  incoming `mute`/`мут` messages never trigger a mutation;
+- mute success plus edit failure, edit success after no-op, and independent
+  moderation/notification results;
+- recorded/fake end-to-end supervised Go and Python moderation plugins;
+- disconnect/reconnect, plugin crash/restart/unload, failed activation,
+  upgrade/rollback, daemon shutdown, and no leaked waiters/goroutines/cursors/
+  cache/coordinator/idempotency state;
+- benchmarks and opt-in soak tests for participant pages, repeated moderation,
+  contention across chats/plugins, cache churn, and result-size boundaries.
+
+Use fake clocks, deterministic IDs, narrow fake gotd interfaces, and synthetic
+entities. Normal fixtures must contain no real Telegram credentials, access
+hashes, invite URLs, usernames, phone numbers, chat titles, or message content.
+
+Run at minimum:
+
+```text
+make fmt-check
+make lint
+make test
+make test-race
+make build
+uv run --project sidecar/python python -m unittest discover -s sidecar/python/tests -t sidecar/python
+go test -run '^$' -bench . -benchmem ./...
+SERENOX_SOAK=1 go test -run 'Soak|Resource|Moderation' -count=1 ./...
+```
+
+If a repository-wide command has a known pre-existing failure, prove that the
+moderation change introduces no new failure, report the exact baseline and
+delta, and do not describe the entire gate as passing.
+
+ACCEPTANCE CRITERIA
+
+1. Go and Python plugins can inspect moderation state and perform the verified
+   member, administrator, message, settings, join-request, invite, and forum
+   operations through typed SDK groups without importing a Telegram library.
+2. A plugin can safely resolve the sender of a replied message, mute/restrict
+   that participant, and independently edit the owner's outgoing trigger with
+   honest sequential results.
+3. Both `.mute 1h` and an exact outgoing reply-only no-prefix `mute 1h`/`мут
+   1ч` example are supported at plugin level; incoming users cannot invoke the
+   owner-only moderation flow.
+4. Every claimed operation has an explicit DTO, validation, capability,
+   granular permission, resource limit, core service path, real gotd mapping,
+   recorded/fake fixture, SDK parity, tests, and documented verification state.
+5. No raw Telegram object, access hash, session credential, invite secret,
+   arbitrary method dispatcher, generic JSON parameter blob, or plugin-owned
+   Telegram connection crosses the boundary.
+6. Rights and restriction booleans are unambiguous, preserve field presence,
+   convert correctly to/from gotd, and document inheritance and deadline
+   semantics.
+7. Basic groups, megagroups, broadcast channels, linked discussions, forums,
+   anonymous admins, channel senders, creators, administrators, bots, deleted
+   users, and migrations produce explicit supported or unsupported outcomes.
+8. Least-privilege permissions prevent reply/send/delete-only plugins from
+   muting members and prevent mute-only plugins from promoting admins,
+   managing invites, deleting topics, or performing destructive bulk actions.
+9. Mutations return typed success/no-op/failure/partial/outcome-unknown results,
+   do not fabricate resulting state, do not retry ambiguous outcomes, and do
+   not claim mute-plus-notification atomicity.
+10. Moderation requests, pages, batches, backend calls, caches, cursors,
+    idempotency entries, keyed ordering, strings, results, metrics, and
+    lifecycle resources all have tested hard bounds and fair scheduling.
+11. Plugin/account/chat/target isolation, idempotency, concurrent operation
+    ordering, cancellation, shutdown, restart, upgrade, and rollback are
+    deterministic and race-tested without reverting already-applied Telegram
+    state blindly.
+12. Invite URLs, message content, usernames, IDs, access hashes, reasons, and
+    raw Telegram errors do not leak into logs, metrics, diagnostics, fixtures,
+    or unrelated plugin results.
+13. Existing commands, watchers, text/media actions, action results, reads,
+    storage, Jobs, HTTP, control bot, package installation, supervision, and
+    lifecycle behavior remain compatible.
+14. Compatibility documentation distinguishes source-audited, fake,
+    recorded-only, live-gated, partial, and unsupported operations and makes no
+    claim of full Telegram/Hikka/Pyrogram/Telethon compatibility.
+15. All normal tests are deterministic, credential-free, network-free, and
+    non-destructive; any live moderation suite is explicitly gated, uses only
+    disposable consenting targets, restores changes, and redacts all identity
+    and secret data.
+
+DELIVERABLE
+
+Implement the protocol and validators, moderation service and operation
+groups, granular permissions/package policy, gotd/recorded/fake adapters,
+peer/target resolution, typed results and idempotency integration, Go SDK,
+Python SDK/sidecar, focused example or supervised fixture, limits,
+observability, lifecycle cleanup, tests, benchmarks, optional safe live gate,
+and all necessary documentation.
+
+Keep the work modular and update only related files. In the final report list:
+
+- changed files and package layout;
+- complete operation catalog and verification matrix;
+- protocol DTOs, rights semantics, deadlines, results, errors, and limits;
+- capability and permission table;
+- exact gotd mappings by chat kind;
+- target/access-hash resolution and cache behavior;
+- idempotency, ordering, partial failure, ambiguity, and scheduled-reversal
+  semantics;
+- Go/Python SDK APIs and no-prefix watcher example behavior;
+- privacy/redaction, observability, and lifecycle guarantees;
+- fake/recorded/live/partial/unsupported status;
+- benchmark/soak/live-gate results when run;
+- every verification command and its exact result;
+- any pre-existing repository failures separately from new regressions.

@@ -1,0 +1,578 @@
+TASK: Build and launch a production-grade documentation website for Serenox.
+
+Repository: /home/nihmadev/Serenox
+
+Read the entire current repository before editing: `README.md`, every existing
+file under `docs/`, all earlier prompts under `prompts/`, Go commands and public
+packages, configuration and application-manifest models, plugin package and
+permission validation, the Go SDK, the Python SDK/sidecar, examples, CI and
+release workflows, and the tests that prove current behavior. Preserve existing
+user changes and do not rewrite unrelated product code. Documentation must be
+derived from the implementation and tests, not merely from plans or prompts.
+
+Use the current stable releases and official documentation of Next.js,
+Fumadocs, Fumadocs MDX, and their direct dependencies. Confirm their actual
+current APIs before scaffolding; do not copy obsolete examples. Pin compatible
+versions in a committed lockfile and avoid abandoned packages.
+
+PRIMARY DELIVERABLE
+
+Create a complete, polished, maintainable documentation website using
+Fumadocs, Next.js App Router, TypeScript, and MDX. This is not an MVP, a visual
+mockup, or a handful of placeholder pages. It must be a production-quality
+docs-as-code system with a coherent information architecture, accurate English
+documentation of the current Serenox product, fast local development,
+full-text search, accessible responsive design, community contribution links,
+automated verification, SEO, deployment configuration, and an explicit path to
+future localization and release-versioned documentation.
+
+The site should feel as deliberate and usable as a mature infrastructure or
+developer-tool documentation portal while retaining a distinct Serenox visual
+identity. Do not clone Vercel, Render, Mintlify, or another site's protected
+branding, copy, illustrations, or layout pixel-for-pixel.
+
+The canonical initial public locale is English. All navigation, prose, UI
+labels, metadata, examples, diagrams, accessibility text, error explanations,
+and contribution material delivered by this task must be in clear technical
+English. Do not add partially translated pages, machine-translated filler, or a
+language switcher containing unavailable languages.
+
+TARGET EXPERIENCE
+
+The completed site should provide:
+
+```text
+docs.serenox.dev
+  -> product overview and clear next action
+  -> installation and first successful recorded-mode run
+  -> live Telegram setup with honest security boundaries
+  -> concepts and architecture
+  -> plugin development for Go and Python
+  -> task-oriented guides
+  -> CLI, configuration, manifest, package, permission, and protocol reference
+  -> operations, troubleshooting, migration, security, and contribution guides
+```
+
+A reader must be able to understand what Serenox is, decide whether its
+compatibility boundary fits their use case, install it, run it safely, build a
+small plugin, package and operate that plugin, diagnose common failures, and
+find precise reference material without reading source code.
+
+HARD QUALITY RULES
+
+- Do not ship lorem ipsum, TODO pages, empty categories, fake testimonials,
+  invented benchmarks, fake API surfaces, unsupported commands, speculative
+  compatibility promises, or decorative links that lead nowhere.
+- Do not describe a feature as working merely because an earlier prompt asked
+  for it, a DTO exists, or a documentation file claims it. Verify executable
+  paths and tests. Label verified, partial, experimental, planned, and
+  unsupported behavior honestly and consistently.
+- Never publish Telegram API credentials, tokens, session data, real phone
+  numbers, local absolute paths, signing secrets, or user-specific data.
+- Keep examples deterministic and copy-pasteable. Clearly distinguish shell
+  prompts, placeholders, expected output, and optional commands.
+- Prefer ordinary Markdown for prose. Use MDX only where a real component
+  improves comprehension. Content must remain readable in GitHub source view.
+- Avoid a client-side JavaScript dependency for content that can be rendered
+  statically or on the server.
+- The production build must have no broken internal links, missing assets,
+  hydration warnings, browser console errors, TypeScript errors, or failed
+  content/schema validation.
+- Preserve mobile usability, keyboard navigation, semantic landmarks, visible
+  focus, reduced-motion preferences, sufficient contrast, and useful alt text.
+- Do not add telemetry, cookies, third-party scripts, hosted fonts, or external
+  analytics by default. Any optional analytics integration must be disabled
+  unless explicitly configured and documented.
+
+REQUIRED WORK
+
+1. Audit the repository and establish documentation truth.
+
+   Build a private working inventory that maps each documented claim to code,
+   tests, fixtures, or an explicitly identified product boundary. Audit at
+   least:
+
+   - supported operating systems, Go and Python versions, and external tools;
+   - build, install, login, recorded-mode, daemon, bot, plugin, config, and
+     diagnostic commands actually exposed by the current CLI;
+   - configuration keys, defaults, environment variables, file locations,
+     validation rules, and secret-handling behavior;
+   - Go and Python plugin lifecycle, decorators/interfaces, actions, storage,
+     HTTP, media, jobs, Telegram client/read APIs, moderation, control bot,
+     events, services, and any other surfaces that are truly implemented;
+   - `.srnx` packaging, manifests, signatures, permissions, installation,
+     activation, upgrade, rollback, and removal;
+   - recorded versus live Telegram behavior and the evidence for each;
+   - resource limits, backpressure, rate limits, idempotency, cancellation,
+     supervision, health, diagnostics, shutdown, and recovery;
+   - compatibility and migration behavior, including explicit non-goals.
+
+   Resolve contradictions between README, existing docs, tests, and code in
+   favor of verified implementation. Correct stale documentation as part of
+   the site migration. If a potentially important fact cannot be verified,
+   describe the uncertainty or omit the claim; do not guess.
+
+2. Choose and document a clean repository layout.
+
+   Add a self-contained website workspace, preferably `website/`, without
+   interfering with the Go module or Python sidecar. Keep one canonical copy of
+   every documentation page. Prefer retaining `/docs` as the content source if
+   the current Fumadocs content loader supports this cleanly and portably. If
+   migration into the website workspace is materially safer, move content
+   atomically and update every README, source, workflow, and contributor link.
+
+   Do not rely on filesystem symlinks that are fragile on Windows or hosted
+   build systems. Do not maintain generated copies of hand-authored MDX. Make
+   the boundary between hand-authored content, generated reference data, site
+   code, public assets, and build output obvious.
+
+   Include:
+
+   - a minimal package manifest with purposeful scripts;
+   - a committed deterministic lockfile;
+   - strict TypeScript configuration;
+   - current Next.js App Router and Fumadocs configuration;
+   - content schema/frontmatter validation;
+   - formatter and linter configuration scoped to the website;
+   - `.gitignore` entries for generated website artifacts;
+   - documented local development and production-build commands.
+
+3. Implement a durable information architecture.
+
+   Organize content by reader intent rather than by the repository's internal
+   package tree. At minimum, provide complete and useful sections equivalent to:
+
+   ```text
+   Overview
+     Introduction
+     Why Serenox
+     Current status and compatibility boundary
+     Architecture at a glance
+
+   Getting started
+     Prerequisites
+     Install/build
+     Two-minute recorded-mode quickstart
+     Telegram authorization
+     Configuration
+     First successful run
+
+   Concepts
+     Core and plugin isolation
+     Dispatch and actions
+     Permissions and trust model
+     Supervision and lifecycle
+     Backpressure, limits, and idempotency
+     Go and Python runtime model
+
+   Plugin development
+     Choose Go or Python
+     First Go plugin
+     First Python plugin
+     Commands, watchers, callbacks, and inline behavior
+     Storage, HTTP, media, jobs, client, and moderation APIs
+     Packaging, signing, installation, upgrade, and rollback
+     Testing and debugging
+
+   Guides
+     Real task-oriented workflows grounded in repository examples
+     Autopilot or other flagship example, if still implemented
+     Safe migration from legacy modules
+     Production operation and troubleshooting
+
+   Reference
+     CLI
+     Configuration
+     Application manifest
+     Plugin package manifest and permissions
+     Go SDK
+     Python SDK
+     Protocol and error model
+     Compatibility/implementation matrices
+
+   Project
+     Security
+     Contributing to code
+     Contributing to documentation
+     Release/support policy
+   ```
+
+   Adapt names and grouping to the actual product. Avoid twenty shallow pages
+   where a smaller set of substantial pages would be clearer, but split pages
+   that have become difficult to navigate. Provide intentional next/previous
+   flow and cross-links between concepts, guides, and reference.
+
+4. Rewrite and complete the English content.
+
+   Convert existing documentation into consistent, professional technical
+   English. Preserve useful verified detail rather than replacing it with
+   marketing copy. Each major guide should include, as appropriate:
+
+   - a short statement of audience and outcome;
+   - prerequisites and relevant security warnings;
+   - numbered steps with copyable commands;
+   - expected behavior or bounded sample output;
+   - failure modes and troubleshooting links;
+   - what to read next.
+
+   Establish a style guide: use "Serenox" consistently, use sentence-case
+   headings, address the reader directly, define unfamiliar terms, use the
+   exact CLI and protocol spelling from code, avoid vague words such as
+   "simply" and "obviously", and explain destructive or credential-sensitive
+   operations before presenting them.
+
+   The landing and overview material must clearly state that Serenox is a Go
+   userbot runtime with supervised external plugins and an explicit
+   compatibility boundary. Keep claims factual. Explain why isolation,
+   boundedness, stable DTOs, and deterministic packages matter without
+   pretending they eliminate all risk.
+
+5. Provide a complete first-run journey.
+
+   A new contributor must be able to follow the English quickstart from a
+   clean checkout. Validate every command in an isolated temporary directory
+   or equivalent clean test environment where practical. Cover both:
+
+   - the safe recorded adapter path that does not contact Telegram; and
+   - the opt-in real-account authorization path with accurate credential and
+     session-storage warnings.
+
+   Never require a real Telegram account in ordinary CI. Use existing fixtures
+   for reproducible examples and clearly mark live-only verification.
+
+6. Deliver first-class Go and Python plugin learning paths.
+
+   Create parallel but language-appropriate guides rather than mechanically
+   translating APIs between languages. Each path must show a minimal plugin,
+   metadata/manifest declaration, configuration where required, a command or
+   handler, one bounded host API use, local testing, packaging, verification,
+   installation, and safe removal.
+
+   Link every important example to real compilable/tested repository code.
+   Run examples in CI or add focused tests that prevent snippets from silently
+   drifting. Clearly call out differences between Go executables and the
+   managed Python sidecar, including lifecycle, async behavior, dependencies,
+   permissions, and unsupported compatibility surfaces.
+
+7. Build accurate reference material without duplicated truth.
+
+   Generate reference data from code when a stable generator can be maintained
+   more safely than hand-copying it. Good candidates include CLI command trees,
+   configuration schemas/defaults, permission names, protocol error codes, and
+   SDK symbol inventories. Generated output must be deterministic, reviewable,
+   and checked for drift in CI.
+
+   Do not create a public OpenAPI section unless Serenox actually exposes an
+   appropriate public HTTP API or schema. Fumadocs OpenAPI support is not a
+   reason to invent one. For Go and Python SDK reference, provide useful
+   descriptions and examples, not an uncurated symbol dump.
+
+8. Create a distinct production UI and design system.
+
+   Start from Fumadocs UI primitives and customize them into a restrained
+   Serenox identity. Provide a small, coherent token system for light and dark
+   themes: color, typography, spacing, radii, borders, shadows, and code
+   surfaces. Use locally bundled/system fonts unless the repository already has
+   properly licensed brand assets. Ensure both themes meet accessible contrast.
+
+   Implement and use purposeful documentation components such as:
+
+   - notes, tips, warnings, danger notices, and compatibility callouts;
+   - steps and code groups/tabs;
+   - cards for navigation, not decorative clutter;
+   - typed field/property tables;
+   - status and support badges with accessible text;
+   - file trees and architecture/process diagrams;
+   - copy buttons with clear feedback;
+   - expandable detail only where progressive disclosure helps.
+
+   Avoid excessive gradients, glass effects, animation, oversized hero copy,
+   fake terminal chrome, and dashboard-like decoration that competes with the
+   content. Respect `prefers-reduced-motion`. Use SVG or CSS for simple diagrams
+   and icons; optimize all raster assets and document their license/source.
+
+9. Implement navigation, search, and discovery completely.
+
+   Provide:
+
+   - a responsive top navigation and hierarchical sidebar;
+   - breadcrumbs where they improve orientation;
+   - a right-side page table of contents on suitable viewports;
+   - previous/next navigation based on the authored page tree;
+   - keyboard-accessible search with useful empty and no-result states;
+   - local/self-hostable full-text indexing suitable for the initial site size;
+   - stable heading anchors and visible copy-link affordances;
+   - a mobile navigation drawer that traps/restores focus correctly;
+   - links to GitHub, releases, issue reporting, and contribution guidance.
+
+   Search indexing must exclude private build data and irrelevant UI chrome.
+   Results should include title, section context, and a useful excerpt. Verify
+   keyboard operation and screen-reader labels.
+
+10. Make community editing a first-class workflow.
+
+   Every hand-authored documentation page must have a correct "Edit this page
+   on GitHub" link targeting its canonical source and default branch. Provide a
+   nearby "Report an issue" path that pre-fills useful page context without
+   leaking user data.
+
+   Add or update contribution guidance covering:
+
+   - how to run the docs site locally;
+   - content organization and frontmatter;
+   - Markdown versus MDX usage;
+   - style and terminology;
+   - adding images and diagrams;
+   - link and code-example validation;
+   - proposing corrections through a pull request;
+   - preview deployments and reviewer expectations;
+   - how breaking product changes must update docs in the same PR.
+
+   Add a documentation issue template and a focused pull-request checklist if
+   they fit the repository's existing GitHub contribution model. Configure
+   CODEOWNERS only if the repository already has a real owner/team value; do
+   not invent GitHub handles or teams.
+
+11. Design for future localization now, but publish English only.
+
+   Introduce a locale-aware content and routing abstraction that can later add
+   languages without renaming every page or rewriting components. Use stable
+   locale-independent document IDs/slugs where the selected Fumadocs version
+   supports them. Centralize UI strings such as navigation actions, search
+   labels, feedback prompts, accessibility labels, and footer text instead of
+   scattering English literals through components.
+
+   The initial public URLs may use either clean unprefixed English routes or an
+   explicit `/en/` prefix. Choose one strategy after evaluating canonical URLs,
+   future migration cost, and Fumadocs/Next.js support, document the decision,
+   and test it. If English is unprefixed, define a redirect/canonical plan for
+   future localized routes. Do not expose a locale selector until at least two
+   complete locales exist.
+
+   Add a concise localization contributor guide explaining page identity,
+   translation file placement, fallback rules, translated images, stable
+   heading IDs, review ownership, and how to detect missing or stale
+   translations. English remains the source locale. Missing translations must
+   fall back or fail according to one documented policy, never produce mixed
+   language pages silently.
+
+12. Prepare for future release-versioned documentation.
+
+   Separate locale identity from product release/version identity in routing,
+   content metadata, and internal types. Do not conflate `en` with `v1`.
+   Define a documented future URL and content strategy such as:
+
+   ```text
+   /docs/...                 current English documentation
+   /ru/docs/...              future Russian current documentation
+   /docs/v1/...              future archived English v1 documentation
+   /ru/docs/v1/...           future archived Russian v1 documentation
+   ```
+
+   The exact scheme may differ if the current framework strongly favors a
+   safer layout. Do not generate duplicate archived versions now and do not add
+   a version selector containing nonexistent releases. Implement only the
+   abstractions and tests that prevent today's choices from blocking future
+   localization/versioning. Document how a release snapshot will be cut,
+   supported, corrected, canonicalized, and eventually archived.
+
+13. Add SEO, social metadata, and machine-readable discovery.
+
+   Provide correct per-page title, description, canonical URL, Open Graph and
+   Twitter metadata, favicon/app icons, sitemap, and `robots.txt`. Generate a
+   branded social image using repository-owned assets or a deterministic local
+   renderer; do not depend on an authenticated external image service.
+
+   Add useful `llms.txt` and, if maintainable, `llms-full.txt` outputs derived
+   from public canonical documentation. They must contain or link only to
+   public documentation and must not bypass `noindex` or expose repository
+   internals. Add structured data only where it is valid and testable; do not
+   spam generic schema markup.
+
+14. Handle redirects and link stability.
+
+   Preserve useful existing repository links and define redirects for any
+   changed public documentation routes. Use stable, explicit slugs for pages
+   likely to be linked externally. Check relative links as rendered routes and
+   as GitHub source links. Validate anchors and case sensitivity on Linux.
+
+   Update `README.md` so its documentation links point to the canonical source
+   or public site deliberately. Do not leave a mixture of stale file paths and
+   production URLs with unclear ownership.
+
+15. Add production CI and content verification.
+
+   Extend the existing CI without weakening Go or Python checks. At minimum,
+   run on relevant pull requests:
+
+   - deterministic dependency installation from the lockfile;
+   - formatting and linting;
+   - TypeScript type checking;
+   - content/frontmatter schema validation;
+   - MDX compilation and production build;
+   - broken internal link, image, and heading-anchor checks;
+   - focused component/unit tests;
+   - a small browser smoke test over primary navigation, search, theme, mobile
+     menu, copy action, and edit link;
+   - verification that generated reference content is current;
+   - checks that documented code snippets/examples still compile or execute
+     where feasible without live credentials.
+
+   Cache only safe dependency/build artifacts. Pin GitHub Actions to deliberate
+   versions according to existing repository policy. Do not require repository
+   secrets for forked documentation PR validation.
+
+16. Verify accessibility, responsiveness, and browser behavior.
+
+   Test at desktop and narrow mobile viewports in both light and dark themes.
+   Verify keyboard-only navigation, skip link, focus order, modal/drawer focus,
+   search, tabs, expandable regions, code-copy feedback, heading hierarchy, and
+   landmarks. Run an automated accessibility scan on representative pages and
+   fix serious findings rather than merely recording them.
+
+   Test at least the current stable Chromium browser through automation and
+   perform framework-level compatibility checks for other evergreen browsers.
+   Avoid browser-specific APIs without guarded fallbacks.
+
+17. Meet explicit performance and resilience goals.
+
+   Favor static generation and server components. Keep client components small
+   and purposeful. Avoid shipping all documentation content or the full search
+   index in the initial page bundle. Optimize icons, syntax highlighting,
+   images, and fonts. Prevent cumulative layout shift in navigation, code
+   blocks, and diagrams.
+
+   On representative production pages, target Lighthouse scores of at least 90
+   for performance and 95 for accessibility, best practices, and SEO under a
+   repeatable local audit. Treat thresholds as engineering goals, not an excuse
+   to manipulate the audit. Record the environment and any justified exception.
+
+   Provide useful 404 and error states with navigation back to documentation.
+   The site should remain readable if optional search indexing or analytics is
+   unavailable.
+
+18. Configure secure deployment.
+
+   Make Vercel the documented primary deployment target and support a custom
+   `docs.serenox.dev` domain through configuration/documentation without
+   assuming DNS credentials. Ensure preview deployments work for pull requests.
+   Keep the application portable to another standards-compatible Node hosting
+   environment where practical; do not bind content to a proprietary CMS.
+
+   Document build command, output/runtime assumptions, environment variables,
+   preview versus production behavior, domain/canonical configuration, and
+   rollback. Add sensible security headers compatible with the implemented
+   features. Do not add a dangerously broad Content Security Policy merely to
+   claim one exists, and do not place secrets in `NEXT_PUBLIC_*` variables.
+
+19. Add maintainership and freshness mechanisms.
+
+   Define who owns content by area using repository-realistic paths rather than
+   invented people. Provide a lightweight documentation release checklist and
+   require user-visible product changes to update docs and compatibility/status
+   matrices in the same change.
+
+   Surface "last updated" only from reliable Git history or build metadata; do
+   not ask authors to maintain dates manually. If freshness metadata cannot be
+   made accurate in shallow hosted clones, omit it or label it honestly.
+
+20. Perform a final content and implementation audit.
+
+   Before completion:
+
+   - read the built site end-to-end as a new user and as a plugin author;
+   - compare CLI/config/SDK/reference claims against current code again;
+   - run every non-live quickstart and representative code example;
+   - inspect all principal pages visually at desktop and mobile sizes;
+   - test dark/light themes, search, navigation, anchors, copy buttons, 404,
+     edit/report links, sitemap, robots, and machine-readable docs outputs;
+   - verify there are no secrets, local paths, stale generated files, broken
+     redirects, duplicate canonical pages, or unavailable locale/version links;
+   - ensure all relevant CI, tests, and production builds pass.
+
+TESTING EXPECTATIONS
+
+Use the repository's existing test conventions and add the smallest justified
+tooling surface. Tests must cover at least:
+
+- content loader and frontmatter rejection cases;
+- navigation/page-tree generation and stable route IDs;
+- future locale/version route composition without publishing fake variants;
+- edit/report URL generation for canonical source files;
+- search index inclusion/exclusion and representative queries;
+- internal links, images, heading anchors, redirects, canonical URLs, sitemap,
+  robots, and `llms.txt` generation;
+- keyboard-accessible interactive documentation components;
+- theme initialization without a flash-inducing hydration mismatch;
+- mobile navigation and focus restoration;
+- 404/error behavior;
+- deterministic generated reference output;
+- successful clean production build.
+
+Run and report, adapting exact commands to the implemented package manager:
+
+```text
+go test ./...
+Python sidecar test suite
+existing repository formatting/lint checks
+website dependency install from lockfile
+website format/lint/typecheck
+website unit/component tests
+website production build
+link and content validation
+browser smoke/accessibility tests
+representative Lighthouse audit
+```
+
+Do not hide pre-existing failures. Distinguish them from regressions introduced
+by this work with exact commands and evidence.
+
+ACCEPTANCE CRITERIA
+
+The task is complete only when:
+
+- a production Fumadocs + Next.js + TypeScript + MDX website exists in the
+  repository and builds from a clean checkout;
+- the site contains a coherent, substantial English documentation set covering
+  actual Serenox installation, concepts, plugin development, reference,
+  operation, security, migration, and contribution workflows;
+- existing useful docs were migrated or integrated without duplicate sources
+  of truth, and stale claims were corrected against implementation;
+- a new user can complete the recorded-mode quickstart exactly as written;
+- Go and Python plugin authors each have a tested end-to-end learning path;
+- responsive navigation, local full-text search, page TOCs, stable anchors,
+  code copy, light/dark themes, 404, edit/report links, and next/previous flow
+  work in the built application;
+- the visual system is recognizably Serenox, accessible, and not a copied
+  third-party brand;
+- all currently published content and UI are English;
+- locale-aware and release-version-aware architecture is documented and tested
+  without exposing unavailable translations or fake archived versions;
+- SEO metadata, canonical URLs, sitemap, robots, social metadata, and public
+  machine-readable documentation outputs are valid;
+- docs contribution guidance and GitHub workflows allow community pull requests
+  to be previewed and verified without privileged secrets;
+- CI catches broken MDX, types, internal links, anchors, assets, generated
+  reference drift, and primary browser/accessibility regressions;
+- primary Vercel deployment and custom-domain setup are documented, secure, and
+  reproducible;
+- all relevant existing and new tests pass, or genuinely pre-existing failures
+  are reported precisely without being concealed.
+
+FINAL RESPONSE
+
+Summarize:
+
+- the implemented website architecture and canonical content location;
+- the final information architecture and major documentation added or revised;
+- how repository code and tests were used to verify claims;
+- design, accessibility, search, SEO, contribution, localization, and future
+  versioning decisions;
+- CI and deployment changes;
+- exact verification commands and results;
+- any remaining limitation that is truly outside this task's scope.
+
+Do not call the result complete if it is only scaffolded, if major sections are
+placeholders, if English content is inconsistent, if localization/versioning
+choices require a future route rewrite, if community edit links are incorrect,
+or if the production build and primary user journeys have not been verified.

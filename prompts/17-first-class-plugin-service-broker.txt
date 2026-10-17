@@ -1,0 +1,603 @@
+TASK: Implement a first-class typed service broker for mediated plugin-to-plugin RPC in Serenox.
+
+Repository: /home/nihmadev/Serenox
+
+Read the current repository before editing: all earlier prompts in `prompts/`,
+especially the Event Fabric task and its delivered implementation; architecture
+and compatibility documents; protocol envelopes, framing, duplex reverse RPC,
+deadlines and authentication; plugin metadata and signed package manifests;
+App admission, executor, supervisor and lifecycle; actions and idempotency;
+storage, Jobs, HTTP, media and moderation host services; Go SDK; Python
+SDK/sidecar; observability; recorded fixtures; application manifest; and all
+related tests. Preserve existing user changes. Do not rewrite unrelated
+components. Verify the actual Event Fabric implementation before depending on
+it, and do not invent APIs that prompt 16 did not deliver.
+
+TERMINOLOGY
+
+Call the product-level subsystem the Serenox Service Broker. Use conventional
+protocol and package names such as `services`, `servicebroker`, `ServiceSpec`,
+`ServiceMethodSpec`, `ServiceInvocation`, and `host.services.call`. Do not call
+it a “service mesh”: Serenox is mediating local supervised RPC, not installing
+network proxies or claiming distributed service-mesh behavior. A future UI may
+call the subsystem “Serenox Nexus”, but the wire contract must remain technical
+and vendor-neutral.
+
+PRIMARY DELIVERABLE
+
+Implement production-quality, bounded, unary plugin-to-plugin RPC mediated
+entirely by the Serenox core. A verified plugin can declare typed services it
+provides and exact services it consumes. A caller invokes a logical
+service/method/version through a host reverse-RPC API; the core resolves an
+active compatible provider, checks signed permissions and dependency policy,
+propagates deadline/trace/cancellation, admits the invocation through bounded
+execution, and returns a typed result or structured error.
+
+```text
+plugin A
+  -> host.services.call(ai.summarize/v1, Summarize)
+  -> core authentication, policy, resolution and admission
+  -> supervised plugin B service handler
+  -> typed result
+  -> core validation and accounting
+  -> plugin A
+```
+
+Neither plugin receives the other's PID, executable path, socket, RPC token,
+storage namespace, configuration, process handle, or language-specific object.
+The core owns discovery, provider identity, compatibility, deadlines,
+backpressure, cancellation, circuit state, observability, and lifecycle. The
+provider owns the method's business logic.
+
+MODULARITY REQUIREMENT
+
+- Do not add or leave behind an implementation source file larger than 450
+  non-blank lines. Split protocol DTOs, validation, declarations, permission
+  policy, registry, dependency graph, routing, invocation state, SDK, metrics,
+  and lifecycle code.
+- Keep individual functions below 80 non-blank lines where practical.
+- Use narrow interfaces and dependency injection for clock, ID generation,
+  provider registry, executor admission, supervisor dispatch, policy, and
+  metrics.
+- Keep every vertical slice buildable and tested.
+- Reuse the existing authenticated duplex RPC, supervisor connection,
+  executor, circuit breaker, Event Fabric trace context, storage/media handles,
+  and lifecycle. Do not introduce a parallel transport or plugin runtime.
+- Do not add one goroutine, queue, lock, connection, timer, or client per
+  service, method, caller, provider, or invocation.
+
+PRODUCT INTENT
+
+The Service Broker makes plugins reusable workers instead of isolated command
+handlers. Example logical contracts include:
+
+```text
+speech.transcribe/v1.Transcribe
+ai.summarize/v1.Summarize
+knowledge.search/v1.Search
+notifications.send/v1.Send
+```
+
+A Telegram plugin can call an AI service without importing its SDK or receiving
+its API key. An AI provider can later be swapped from a remote implementation
+to a local model without changing the caller's logical contract. Service names
+describe capabilities, not vendors: prefer `ai.summarize` over `openai.chat` in
+shared contracts. Vendor-specific services are still allowed when the behavior
+is genuinely vendor-specific.
+
+The initial broker is single-daemon and local-process only. It is not gRPC,
+HTTP, D-Bus, Kubernetes service discovery, a distributed service mesh, or a
+public network API.
+
+NON-GOALS AND HARD BOUNDARIES
+
+Do not add any of the following:
+
+- direct plugin-to-plugin sockets, inherited file descriptors, shared memory,
+  direct stdio access, process handles, ports, DNS/service discovery, or tokens;
+- raw arbitrary method-name dispatch without signed declarations;
+- reflection-driven DTO invocation, arbitrary Go/Python object serialization,
+  pickle, gob across trust boundaries, protobuf `Any`, or unrestricted maps;
+- streaming RPC in v1; use existing media/blob handles for large content;
+- automatic retries of mutating or outcome-unknown provider calls;
+- exactly-once invocation or distributed transaction claims;
+- caller-selected provider IDs unless an explicit policy grants that choice;
+- cross-account service calls by default;
+- recursive/unbounded call graphs, circular hard dependencies, fan-out RPC,
+  broadcast calls, or hidden fallback chains;
+- access to another plugin's storage, jobs, configuration, secrets, logs,
+  metrics, events, or action permissions;
+- a generic proxy for Telegram, HTTP, SQL, filesystem, shell, or host services;
+- invocation payloads, results, IDs, trace IDs, user IDs, or message content in
+  metric labels.
+
+REQUIRED WORK
+
+1. Audit the delivered transport and composition boundary.
+
+   Trace how a plugin reverse-calls the host while a dispatch is in flight, how
+   the host sends a new request to another supervised process, how concurrent
+   request IDs and pending maps are bounded, and whether a provider can receive
+   an invocation while handling another request. Inspect Go and Python
+   cancellation, deadlines, disconnect cleanup, circuit breaker behavior,
+   executor fairness, and Event Fabric trace propagation.
+
+   Prove or document deadlock risks for `A -> B`, `A -> B -> C`, `A -> B -> A`,
+   self-call, and a single-worker provider. Do not implement routing until the
+   transport can safely represent the required nesting. Add a Service Broker
+   implementation matrix covering protocol, registry, package policy, Go SDK,
+   Python SDK, nested calls, cancellation, lifecycle, and verification state.
+
+2. Define versioned service identity and method contracts.
+
+   Use a stable logical identity such as:
+
+   ```text
+   service: ai.summarize
+   major version: 1
+   method: Summarize
+   ```
+
+   Define strict naming, namespace ownership, reserved `serenox.*`/`core.*`
+   domains, length/cardinality bounds, and compatibility rules. Major versions
+   are routing boundaries. Minor additive schema evolution may be represented
+   only if validators and negotiation can enforce it deterministically.
+
+   Define finite DTOs for:
+
+   - service and method specifications;
+   - provider declaration and consumer requirement;
+   - invocation request/context;
+   - result and structured error;
+   - provider resolution/health summary;
+   - optional schema descriptor/digest;
+   - trace, correlation, causation, hop, deadline, attempt, and idempotency
+     metadata shared with the Event Fabric where appropriate.
+
+   Host-trusted caller/provider/account identities must never be accepted from
+   plugin payload fields.
+
+3. Add signed provider and consumer declarations.
+
+   Extend plugin metadata and `.srnx` policy with declarations similar to:
+
+   ```yaml
+   provides:
+     - service: ai.summarize
+       version: 1
+       methods:
+         - name: Summarize
+           inputSchema: ai.summarize.request/v1
+           outputSchema: ai.summarize.result/v1
+           effect: read_only
+           maxRuntime: 20s
+
+   requires:
+     - service: ai.summarize
+       version: 1
+       methods: [Summarize]
+       availability: optional
+   ```
+
+   Exact syntax should fit the existing JSON package manifest and handshake DTO
+   conventions. Validate package-to-handshake consistency at verify, install,
+   activation, restore, upgrade, and rollback. A plugin must not advertise a
+   service/method/version or dependency absent from its signed package.
+
+   Bound services per plugin, methods per service, requirements, schema bytes,
+   method name lengths, payload/result sizes, max runtime, and total declaration
+   size. Reject duplicate providers according to the v1 provider-selection
+   policy before publishing readiness.
+
+4. Define method effect and idempotency semantics.
+
+   Every method declares one finite effect class:
+
+   - `read_only`: no externally visible mutation by contract;
+   - `idempotent`: mutation is safe only with the supplied idempotency key;
+   - `mutating`: may create an external effect and is never auto-retried;
+   - `unknown`: conservative default, never auto-retried.
+
+   A declaration is a policy contract, not proof that a third-party API obeys
+   it. The broker must not automatically retry any provider call in v1 unless a
+   separately reviewed read-only/idempotent policy is implemented with tests.
+   Timeout or disconnect after provider admission may be `outcome_unknown`,
+   especially for mutating methods.
+
+   Define caller idempotency-key scope, provider visibility, retention, replay,
+   duplicate-in-flight behavior, completed-result caching limits, and conflict
+   errors. Reuse existing idempotency primitives where semantics match; do not
+   create incompatible operation identity rules.
+
+5. Define least-privilege capabilities and permissions.
+
+   Add explicit capabilities such as `services.provide` and `services.consume`.
+   Require exact signed permission for each consumed logical service/method,
+   for example:
+
+   ```text
+   service.call.ai.summarize.v1.Summarize
+   ```
+
+   Normalize names deterministically and prevent wildcard widening. Provider
+   capability never grants consumer capability. Calling a service never grants
+   the caller any of the provider's Telegram, moderation, storage, HTTP, media,
+   jobs, control-bot, event, or secret permissions.
+
+   Define separate operator-only permissions for service registry inspection,
+   provider override, drain, or administrative health actions. Exhaustively
+   test operation-to-permission mapping and package preflight.
+
+6. Implement a bounded provider registry.
+
+   The registry must track only activated, ready, compatible providers and
+   their validated method declarations, account scope, active package version,
+   health/circuit state, and bounded capacity metadata.
+
+   Choose one deterministic v1 provider policy. Prefer exactly one active
+   provider for each `(account, service, major version)` unless the repository
+   already has a safe reason to support multiple providers. If multiple
+   providers are implemented, define stable priority, operator selection,
+   health exclusion, no mid-call failover, upgrade behavior, and anti-flapping
+   rules. Do not add load balancing casually.
+
+   Registry changes must be atomic with plugin activation/rollback. Failed
+   activation cannot leave ghost providers. A circuit-open, stopped, upgrading,
+   or incompatible provider must resolve to a stable unavailable error before
+   invocation admission.
+
+7. Validate dependency graphs during activation.
+
+   Distinguish required and optional service requirements. A plugin with a
+   missing required dependency must not publish ready. An optional dependency
+   produces an explicit unavailable status and may be checked through a typed
+   SDK method.
+
+   Build a bounded dependency graph for hard requirements and reject direct or
+   indirect cycles before activation. Include the exact cycle path in a bounded
+   redacted diagnostic. Optional dependencies must not become hidden hard
+   cycles through startup probes.
+
+   Define activation ordering, upgrade, rollback, provider replacement, caller
+   drain, and what happens when an already-ready required provider later stops.
+   Do not restart dependency trees indefinitely.
+
+8. Implement `host.services.call`.
+
+   Add a typed reverse-RPC operation with request fields for logical service,
+   major version, method, bounded JSON payload, optional idempotency key, and
+   caller-selected timeout no greater than declared/host limits. The host must
+   supply authenticated caller/account identity, invocation ID, absolute
+   deadline, trace/correlation/causation context, hop count, and provider
+   identity.
+
+   The call path must perform, in order:
+
+   ```text
+   validate caller request
+     -> check declaration and exact permission
+     -> resolve compatible ready provider
+     -> check deadline/hop/circuit/capacity
+     -> admit through bounded execution
+     -> dispatch typed invocation to provider
+     -> validate bounded response
+     -> return typed result or structured error
+   ```
+
+   Define whether admission uses the provider's existing queue or a separate
+   bounded service lane within the same executor. Commands, callbacks, jobs,
+   Event Fabric deliveries, and service calls must have explicit fairness and
+   must not starve each other.
+
+9. Add provider-side service invocation dispatch.
+
+   Extend the supervised protocol with a dedicated invocation kind, not a fake
+   Telegram update or stringly command. The provider receives immutable context
+   and a validated payload and routes it only to the declared method handler.
+
+   A handler returns a bounded typed payload plus optional metadata/warnings or
+   a structured service error. It must not return raw exceptions, stack traces,
+   arbitrary action batches, another plugin's objects, or credentials.
+
+   If provider handlers may emit Event Fabric events or perform host actions,
+   those operations remain governed by the provider's own signed permissions.
+   Document sequencing and non-atomicity. A caller must not be able to lend its
+   stronger permissions to the provider, and the provider must not lend its
+   permissions to the caller.
+
+10. Make nested calls safe and bounded.
+
+   Support at least `A -> B` reliably. Support `A -> B -> C` only after proving
+   the existing duplex connections, pending maps, executor lanes, and sidecar
+   event loop cannot deadlock. Enforce:
+
+   - maximum call depth/hop count;
+   - one shrinking absolute deadline propagated through the chain;
+   - bounded pending calls per plugin/account and globally;
+   - call-graph cycle detection using trusted invocation ancestry;
+   - deterministic rejection of self-call and `A -> B -> A` unless an explicit
+     safe reentrant contract is later added;
+   - no blocking while holding registry, executor, storage, or lifecycle locks;
+   - cancellation propagation from caller through every admitted descendant;
+   - fairness against recursive call amplification.
+
+   If safe nested calls cannot be implemented with the current process
+   protocol, ship only depth one and return a stable `nested_call_unsupported`
+   error. Do not hide a deadlock risk behind documentation.
+
+11. Define errors and outcome semantics.
+
+   Provide stable categories for invalid request, undeclared method,
+   permission denied, dependency missing, provider unavailable, provider not
+   ready, circuit open, overloaded, deadline exceeded before admission,
+   provider timeout after admission, caller cancelled, provider disconnected,
+   protocol violation, incompatible version/schema, response too large,
+   idempotency conflict, call cycle, depth exceeded, internal persistence
+   failure, and outcome unknown.
+
+   Preserve the distinction between:
+
+   - not admitted: provider definitely did not run;
+   - admitted but failed: provider ran and returned a known failure;
+   - outcome unknown: provider may have completed an effect;
+   - success: provider returned a valid result before deadline.
+
+   Do not expose provider stack traces, raw Telegram/HTTP/database errors,
+   process arguments, paths, tokens, request payloads, or unbounded error text.
+
+12. Define schemas without building a new IDL compiler.
+
+   Requests and results must be bounded JSON DTOs in v1. Provide schema identity
+   and optional canonical schema digest sufficient to detect mismatches. Reuse
+   existing validators and generated/manual SDK types where practical.
+
+   Do not build a general protobuf/OpenAPI/JSON-Schema compiler unless the
+   repository already has one. A finite validated JSON-schema subset may be
+   used only if it is small, bounded, deterministic, documented, and identical
+   in Go/Python behavior. Otherwise keep schema validation in the provider and
+   caller SDK types while the core enforces identity, digest, and structural
+   resource limits.
+
+13. Use media/blob handles for large data.
+
+   Unary request and response bodies must remain small. Audio, video, documents,
+   images, embeddings, archives, and other large values travel through existing
+   opaque media/blob handles with ownership and delegated-access rules.
+
+   Add the smallest explicit handle delegation mechanism only if the current
+   media ownership model prevents a provider from reading caller-authorized
+   input or returning provider-owned output. Delegation must be scoped to one
+   invocation/service/method/account, expire promptly, enforce bytes and
+   operations, be revocable on cancellation, and never expose filesystem paths
+   or object-storage credentials.
+
+14. Implement Go and Python SDK parity.
+
+   Provide typed APIs for:
+
+   - declaring provided services, methods, and required/optional dependencies;
+   - registering handlers by service/version/method;
+   - calling a service with context/deadline, typed payload/result,
+     idempotency key, and trace propagation;
+   - checking optional dependency availability;
+   - returning success, domain failure, retryable/read-only failure where
+     supported, and outcome unknown;
+   - inspecting immutable invocation context without host secrets;
+   - using invocation-scoped media handles safely.
+
+   Go APIs must encourage context propagation. Python APIs must be async,
+   cancel correctly, use bounded pending reverse calls, and remove waiters on
+   timeout/disconnect. Both SDKs must map identical error categories and must
+   not expose a raw service-call escape hatch that bypasses declarations.
+
+15. Integrate Event Fabric trace and causation context.
+
+   Reuse the delivered Event Fabric identifiers and limits rather than creating
+   a parallel trace model. An event handler calling a service must preserve its
+   trace/correlation context and set the service invocation's causation to the
+   trusted event/invocation identity. A provider-emitted event continues the
+   same bounded trace lineage.
+
+   Service calls remain request/response operations, not events disguised as
+   synchronous RPC. Do not use durable event acknowledgement as an RPC result,
+   and do not make callers poll event history for ordinary unary responses.
+
+16. Integrate lifecycle, upgrade, rollback, and drain.
+
+   Cover provider start/ready, caller start, missing dependencies, process
+   crash, circuit-open, restart, graceful drain, upgrade, failed activation,
+   rollback, unload, uninstall, account detach, daemon shutdown, and protocol
+   disconnect.
+
+   During drain, reject new calls and allow already admitted calls only within
+   the bounded shutdown deadline. Cancellation must propagate. Provider upgrade
+   must validate service compatibility before swapping registry state. Rollback
+   must restore the previous provider declaration atomically. Never replay an
+   ambiguous mutating call automatically after provider restart.
+
+17. Add observability and operator inspection.
+
+   Add bounded metrics for resolution, admission, success, domain failure,
+   overload, timeout-before-admission, timeout-after-admission,
+   outcome-unknown, provider disconnect, circuit-open, cycles, depth rejection,
+   payload/result bytes, duration, in-flight calls, and dependency health.
+
+   Labels may include validated service, major version, method, caller/provider
+   plugin IDs, and stable result category only when cardinality remains bounded
+   by installed declarations. Never label with invocation/trace/correlation ID,
+   payload, result, error text, chat/user/message ID, media handle, URL, or
+   secret.
+
+   Add local operator commands such as:
+
+   ```text
+   serenox services list
+   serenox services inspect ai.summarize --version 1
+   serenox services dependencies PLUGIN_ID
+   serenox services health
+   serenox services drain PROVIDER_ID --yes
+   ```
+
+   Exact syntax may follow current CLI conventions. Inspection must be bounded,
+   redacted, account-scoped, and must not offer an arbitrary operator RPC call
+   containing secrets.
+
+18. Build a focused end-to-end example.
+
+   Add two supervised plugins or fixtures that demonstrate a real mediated
+   call. Prefer one Go caller and one Python provider, plus the reverse language
+   pairing in tests where practical:
+
+   ```text
+   notes presenter
+     -> notes.transform/v1.Normalize
+     -> text worker
+     -> normalized typed result
+     -> caller sends or stores the result through its own permissions
+   ```
+
+   Include required and optional dependency behavior, provider crash before and
+   after admission, timeout, overload, circuit-open, idempotency conflict,
+   payload/result limit, permission denial, upgrade/rollback, trace propagation,
+   and cycle/depth protection. Keep the example credential-free, deterministic,
+   useful in recorded mode, and free of external network calls.
+
+19. Document the contract completely.
+
+   Add a Service Broker guide and update architecture, protocol/duplex RPC,
+   plugin package, Go/Python plugin guides, compatibility, operations, security,
+   Event Fabric docs, application manifest, and milestones as needed. Document:
+
+   - service/method naming and version compatibility;
+   - provider and dependency declarations;
+   - capability/permission policy;
+   - deterministic provider selection;
+   - request/result schemas and size limits;
+   - deadlines, cancellation, admission, fairness, nesting, and cycles;
+   - effect classes, idempotency, retry non-guarantees, and outcome unknown;
+   - media-handle delegation;
+   - trace/causation integration with Event Fabric;
+   - lifecycle, dependency loss, drain, upgrade, rollback, and recovery;
+   - privacy, redaction, metrics, and operator inspection;
+   - single-daemon local status and unsupported distributed/network behavior;
+   - why Service Broker RPC and Event Fabric events are complementary rather
+     than interchangeable.
+
+TESTING
+
+Add focused tests for:
+
+- protocol golden round trips, strict required/forbidden fields, identity
+  overwrite, schema/type/version limits, malformed nested payload/result, and
+  additive compatibility;
+- package-handshake provider/requirement matching, exact permissions,
+  capabilities, duplicate provider policy, missing dependencies, and rollback;
+- deterministic registry resolution, ready/unready/circuit/draining states,
+  provider replacement, concurrent activation, and ghost-provider prevention;
+- dependency graph ordering, required/optional behavior, direct/indirect cycle
+  detection, bounded diagnostics, provider loss, and no restart storms;
+- caller validation, undeclared method, permission denial, deadline shrinking,
+  admission, overload, cancellation, and provider-not-run proof;
+- provider dispatch, handler selection, structured domain errors, panic/
+  exception containment, malformed or oversized response, and protocol breach;
+- success/failure/outcome-unknown distinctions before and after admission;
+- read-only/idempotent/mutating/unknown effect classes, idempotency scopes,
+  duplicate in-flight calls, completed-result retention, conflicts, and no
+  unsafe automatic retry;
+- nested `A -> B -> C`, self-call, `A -> B -> A`, maximum depth, deadline and
+  cancellation propagation, pending-map exhaustion, fairness, and deadlock
+  regression tests;
+- provider crash/restart/circuit, caller crash, disconnect, drain, upgrade,
+  failed activation, rollback, unload/uninstall, account detach, and shutdown;
+- Event Fabric trace/correlation/causation propagation across event -> service
+  -> event chains and enforcement of total hop/trace budgets;
+- media-handle delegation scope, expiry, byte/operation limits, revocation,
+  caller/provider/account isolation, and absence of filesystem/object secrets;
+- Go/Python SDK parity, async cancellation, structured exceptions, typed
+  helpers, sidecar pending-map cleanup, and lack of raw bypass APIs;
+- end-to-end supervised cross-language caller/provider fixtures;
+- race tests, bounded memory/goroutine/waiter/queue/registry behavior,
+  benchmarks, and opt-in soak tests under slow/crashing providers.
+
+Normal tests must remain credential-free and network-free. Run at minimum:
+
+```text
+make fmt-check
+make lint
+make test
+make test-race
+make build
+uv run --project sidecar/python python -m unittest discover -s sidecar/python/tests -t sidecar/python
+go test -run '^$' -bench 'Service|Broker|RPC' -benchmem ./...
+SERENOX_SOAK=1 go test -run 'Soak|Service|Broker|RPC|Resource' -count=1 ./...
+```
+
+If a repository-wide command has a known pre-existing failure, prove that the
+Service Broker change introduces no new failure, report the exact baseline and
+delta, and do not describe the entire gate as passing.
+
+ACCEPTANCE CRITERIA
+
+1. Verified Go and Python plugins can declare and provide typed versioned
+   services and call declared dependencies through the core without direct
+   process or network access.
+2. Signed package declarations, handshake metadata, exact capabilities, and
+   least-privilege method permissions are validated at verify, activation,
+   call, upgrade, restore, and rollback boundaries.
+3. Provider resolution is deterministic, account-scoped, health-aware, atomic
+   with activation, and leaves no ghost provider after failure.
+4. Required/optional dependencies, activation ordering, provider loss, cycles,
+   drain, upgrade, rollback, and uninstall have explicit bounded semantics.
+5. Every call has a trusted identity, shrinking absolute deadline, bounded
+   payload/result, trace lineage, admission state, cancellation path, and
+   stable structured result or error.
+6. Not-admitted, known provider failure, success, and outcome-unknown states
+   remain distinguishable; mutating/ambiguous calls are never retried blindly.
+7. Nested calls are either proven safe and bounded or rejected explicitly;
+   self/circular calls cannot deadlock the daemon or exhaust pending maps.
+8. Provider and caller permissions remain independent and cannot be confused,
+   delegated implicitly, or used as a confused-deputy path to host services.
+9. Large data uses scoped opaque media/blob handles; no raw files, credentials,
+   sockets, process handles, Telegram clients, or another plugin's state crosses
+   the boundary.
+10. Existing supervisor, duplex RPC, executor fairness, circuit breaker, Event
+    Fabric trace context, and lifecycle are reused without a parallel runtime.
+11. Services, methods, dependencies, calls, payload/result bytes, nesting,
+    pending maps, queues, timeouts, idempotency records, metrics, and operator
+    output all have tested hard bounds.
+12. Go/Python SDK semantics match and cross-language supervised fixtures pass
+    for success, errors, cancellation, crash, overload, lifecycle, and tracing.
+13. Existing Telegram commands/watchers, actions, Event Fabric, storage, HTTP,
+    media, jobs, moderation, control bot, packages, and recorded mode remain
+    compatible.
+14. Documentation distinguishes verified local mediated RPC from unsupported
+    streaming, arbitrary dispatch, public network RPC, distributed discovery,
+    load balancing, service mesh, and exactly-once behavior.
+
+DELIVERABLE
+
+Implement the Service Broker protocol and validators, signed provider and
+dependency declarations, capabilities and permissions, registry and dependency
+graph, `host.services.call`, provider invocation dispatch, bounded nesting and
+cycle protection, deadlines/cancellation/idempotency/outcome semantics,
+media-handle delegation where required, Event Fabric tracing integration,
+lifecycle/drain/upgrade/rollback behavior, Go SDK, Python SDK/sidecar,
+operator diagnostics, observability, cross-language examples, tests,
+benchmarks, soak gate, and all necessary documentation.
+
+Keep the work modular and update only related files. In the final report list:
+
+- changed files and package layout;
+- final service/method/dependency declarations and protocol DTOs;
+- capability/permission table and package-handshake validation;
+- provider selection, dependency graph, activation, drain, upgrade, rollback,
+  and provider-loss semantics;
+- invocation admission, deadline, cancellation, nesting, cycle, effect,
+  idempotency, result/error, retry, and outcome-unknown semantics;
+- media-handle delegation and caller/provider permission isolation;
+- Event Fabric trace integration and end-to-end example behavior;
+- Go/Python SDK APIs, resource limits, observability, and operator commands;
+- verified/partial/planned/unsupported matrix;
+- benchmark/soak results when run;
+- every verification command and its exact result;
+- any pre-existing repository failures separately from new regressions.

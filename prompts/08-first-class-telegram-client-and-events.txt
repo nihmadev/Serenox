@@ -1,0 +1,109 @@
+TASK: Implement the first-class, transport-neutral Telegram client and event API for Serenox plugins.
+
+Repository: /home/nihmadev/Serenox
+
+Read the existing architecture, protocol v1 DTOs and validators, Telegram transport and gotd adapter, recorded transport, App dispatcher, executor, supervisor RPC, Go SDK, Python SDK/sidecar, permissions, media API, inline/callback routing, configuration, observability, compatibility matrix, and all related tests before editing. Preserve existing user changes. Do not rewrite unrelated components. Do not expose gotd, Pyrogram, Telethon, Bot API, or any other Telegram-library object across the plugin boundary.
+
+PRODUCT INTENT
+Serenox must be a general-purpose userbot platform rather than a collection of narrow examples. A plugin should be able to implement moderation, automation, demotivators, media converters, image/text synthesizers, notification agents, archive tools, and other workflows using stable typed services. The core owns Telegram connectivity and resource policy; plugins own business logic and return typed requests/actions.
+
+OBJECTIVE
+Replace the deliberately small provisional client-read surface and message-only event model with a versioned, bounded, capability-controlled Telegram domain API. Add the smallest coherent vertical slice needed for useful real plugins while preserving isolation, backpressure, at-most-once dispatch, and explicit unsupported behavior.
+
+REQUIRED WORK
+1. Trace the current path end to end: live gotd updates and actions, recorded updates, conversion into protocol DTOs, App admission and routing, per-plugin executor queues, supervisor RPC, Go SDK, Python sidecar, and reverse host RPC. Record which operations are verified, partial, unsupported, or only source-audited before changing them.
+
+2. Define a stable extension strategy for protocol v1. Prefer additive DTO fields, explicit operation names, and capability/permission declarations. Introduce a negotiated protocol version only when an additive v1 extension cannot be made safe. Unknown operations, update kinds, fields that exceed limits, and unsupported capabilities must fail closed with stable structured errors.
+
+3. Extend the transport-neutral domain DTOs where required:
+   - peer/user/chat descriptors with kind, title, username, flags, and only bounded public metadata;
+   - message descriptors with entities, reply reference, media metadata, forward metadata, edit date, outgoing state, and bounded service-message information;
+   - bounded pagination cursors or offset IDs for history/search;
+   - explicit reaction, album, poll, and chat/member event DTOs only when the corresponding adapter can validate and populate them;
+   - structured Telegram error categories for flood wait, permission denial, missing peer/message, invalid input, rate limit, disconnect, and unsupported operation.
+
+   Do not include access hashes, session material, raw TL constructors, arbitrary update blobs, or unbounded nested message graphs.
+
+4. Implement the initial bounded host.client read surface:
+   - get_me;
+   - resolve_peer by ID or username;
+   - get_message;
+   - get_history with a hard page size and explicit pagination cursor;
+   - search_messages with bounded query length, page size, and cursor;
+   - get_chat/get_user only if the existing adapter can return a stable DTO without an unbounded fetch.
+
+   Make pagination semantics explicit: ordering, cursor lifetime, duplicate behavior, maximum pages per request chain, deadline, and behavior after disconnect. Never return a lazy iterator that can continue network work after the request deadline.
+
+5. Add a first-class typed event model for useful plugin workloads:
+   - message, edited message, deleted message;
+   - callback and inline query events already supported by the protocol;
+   - media-bearing messages with stable media handles;
+   - album/grouped-message identity where it can be derived safely;
+   - reactions, polls, or chat/member updates only behind explicit capabilities and fixtures.
+
+   Each event must have a stable kind, bounded payload, source/update identity, occurrence time, and enough metadata for a plugin to decide whether to act without fetching raw Telegram objects. Do not add every Telegram raw update speculatively; add only DTOs with a defined adapter and compatibility test.
+
+6. Add the first useful outbound operations as typed client/actions, not arbitrary method names:
+   - forward_message;
+   - pin_message and unpin_message;
+   - mark_message_read;
+   - react_to_message;
+   - send/edit/reply/delete text and supported media using the existing action model.
+
+   Define exact permissions, capability declarations, validation, Telegram-side mapping, and unsupported cases for each operation. Avoid a generic "invoke Telegram method" escape hatch.
+
+7. Extend manifest and package validation with least-privilege declarations. Distinguish read operations from message mutation, moderation, reaction, media, inline, and chat-management operations. Enforce declarations during install/activation, metadata registration, reverse RPC, and immediately before the live adapter call. A plugin must not gain a new operation merely by sending a handcrafted DTO.
+
+8. Implement gotd adapter support for the verified subset. Add deterministic fake-client tests for peer resolution, message reads, pagination, history/search, forward, pin/unpin, read markers, reactions, disconnect, flood wait, missing entities, and unsupported server responses. The adapter must use bounded requests, deadlines, cancellation, and existing peer caches without leaking library values.
+
+9. Implement recorded transport fixtures for every newly supported DTO and operation. Recorded mode must remain deterministic, credential-free, and network-independent. Do not mark a live capability verified from a recorded fixture alone; keep the compatibility matrix precise.
+
+10. Extend the Go SDK and Python SDK/sidecar with equivalent typed APIs:
+   - typed client methods and DTOs;
+   - bounded page results and explicit cursors;
+   - context/async cancellation and deadline propagation;
+   - stable typed exceptions/errors with operation and retryability information;
+   - helpers for common workflows without exposing the underlying transport.
+
+   Make APIs ergonomic for real plugins. A demotivator plugin should be able to read a message and its media, transform it, and send a result. A synthesizer should be able to consume bounded text/media inputs and reply. A moderation plugin should be able to inspect history and apply explicitly permitted actions. None of these examples may require raw Telegram imports or arbitrary network/file access.
+
+11. Enforce resource limits at every layer. Bound page size, query/text/entity sizes, nested DTO depth, media references, concurrent client calls, per-plugin client queueing, request deadlines, action counts, and response frames. Do not create one goroutine, timer, retry loop, or unbounded cache entry per update or request.
+
+12. Define consistency and failure semantics. Document what happens when a read succeeds but a subsequent action fails, when Telegram disconnects between pages, when a peer disappears, when a message is deleted, and when a plugin restarts. Do not replay an event or automatically repeat a mutation unless the operation has an explicit idempotency contract.
+
+13. Add observability with bounded labels. Track client operation count, latency, queue delay, timeout, cancellation, disconnect, flood wait, permission rejection, unsupported operation, adapter conversion failure, pagination rejection, and action failure. Never use arbitrary URLs, message text, usernames, chat IDs, message IDs, media handles, or query strings as unbounded metric labels.
+
+14. Update only necessary documentation:
+   - `pkg/pluginproto/v1` and protocol documentation with DTOs, methods, limits, and error codes;
+   - `docs/plugin-development.md`, `docs/go-plugins.md`, and `docs/python-plugins.md` with examples for userbots, demotivators, and synthesizers;
+   - `docs/duplex-rpc.md` with client pagination and permission behavior;
+   - `docs/compatibility.md` and `docs/milestones.md` with verified, partial, and unsupported surfaces;
+   - `docs/authentication.md`, `docs/setup.md`, or `docs/operations.md` only when live verification or recovery behavior changes.
+
+   Do not claim full Telegram or Hikka compatibility. Document exact unsupported operations and the migration replacement for each one.
+
+TESTING
+Add protocol golden tests, malformed/oversized DTO tests, capability and permission tests, pagination/cursor tests, namespace and account isolation tests, client reverse-RPC multiplexing tests, cancellation/deadline/disconnect tests, and duplicate/unknown-operation tests. Add Go adapter tests for recorded and fake-live clients, including flood wait and missing peer/message behavior. Add supervised local-socket end-to-end tests for Go and Python plugins. Add fixtures demonstrating a media-aware demotivator workflow and a bounded text/media synthesizer workflow without external credentials. Add race, overload, cleanup, and restart tests.
+
+Run at minimum:
+
+```text
+make fmt-check
+make lint
+make test
+make test-race
+make build
+go test -run '^$' -bench . -benchmem ./...
+```
+
+ACCEPTANCE CRITERIA
+1. A Go or Python plugin can use typed client reads and supported events without importing a Telegram library.
+2. History/search pagination is bounded, cancellable, and explicit about cursor semantics.
+3. The documented outbound operations are capability- and permission-checked at the core boundary and map correctly through the live adapter or fail with stable unsupported errors.
+4. Recorded, fake-live, supervised Go, and supervised Python fixtures cover every claimed operation.
+5. No raw Telegram object, access hash, arbitrary raw update, unbounded collection, or plugin-controlled socket crosses the boundary.
+6. Existing commands, watchers, inline/callback routing, storage, media, HTTP, and plugin lifecycle behavior remains compatible.
+7. Compatibility documentation distinguishes recorded verification from real-account verification.
+
+DELIVERABLE
+Implement the code, tests, protocol/SDK changes, examples, and necessary documentation. Report changed files, exact DTOs and operation names, capabilities and permissions, limits, pagination semantics, live-versus-recorded verification status, unsupported operations, and all verification commands.

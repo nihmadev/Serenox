@@ -1,0 +1,32 @@
+TASK: Implement a bounded media API for Python plugins and complete production hardening around the new Python capability surface.
+
+Repository: /home/nihmadev/Serenox
+
+Inspect Telegram DTOs and transport actions, Go plugin protocol, supervisor RPC, storage and permissions, Python SDK/action sink, sidecar lifecycle, package runtime, observability, and existing tests. Preserve existing user changes. Do not put binary data into JSON frames and do not expose Telegram-library objects.
+
+OBJECTIVE
+Allow Python plugins to download, upload, inspect, and attach media through opaque handles and bounded streaming while hardening the complete Python runtime for real workloads.
+
+REQUIRED WORK
+1. Define transport-neutral media DTOs: opaque file handle, media metadata, operation type, chunk request, chunk response, checksum, size, MIME type, filename, and completion state.
+2. Implement bounded download and upload operations with explicit max bytes, chunk size, total duration, idle timeout, concurrent transfer count, and per-plugin quota. Every operation must be cancellable.
+3. Keep binary payloads out of JSON control frames. Use a separate authenticated local stream or bounded framed binary channel associated with the existing request ID. Validate ownership, sequence, checksum, and final size.
+4. Add Python SDK methods for media metadata, download to a controlled path or stream, upload from a controlled path or stream, and attaching media to send/reply/edit actions. Reject unbounded in-memory convenience methods.
+5. Map media actions to the Telegram transport only where the native adapter supports them. Unsupported media types must return stable structured errors rather than silently dropping data.
+6. Enforce capability and permission checks for media read, media write, file access, and network-adjacent operations. Never allow arbitrary filesystem paths from a plugin.
+7. Add cleanup for abandoned transfers on timeout, disconnect, restart, crash, and daemon shutdown. Verify temporary files and runtime directories are removed.
+8. Add production observability: transfer bytes, duration, throughput, rejected bytes, active transfers, timeout, cancellation, checksum failure, queue delay, handler latency, restart count, and RSS. Keep labels bounded.
+9. Profile and optimize hot paths without weakening limits. Consider compiled watcher sets, rate-limit eviction data structures, storage write batching, duplicate command parsing/validation removal at trusted boundaries, and reduced JSON reserialization. Make changes only when tests or benchmarks justify them.
+10. Add bounded startup restore parallelism only if it improves measured startup latency and does not make registration or rollback nondeterministic.
+11. Add a repeatable benchmark and soak suite for command latency, watcher throughput, inline/callback latency, storage RPC latency, media throughput, restart recovery, queue overload, and memory stability.
+12. Add failure-injection tests for partial upload, disconnected Telegram transport, sidecar death, malformed chunk, disk-full behavior, timeout, duplicate request, and stale handle.
+13. Document exact media limits, security model, temporary-file behavior, supported Telegram media operations, and known incompatibilities.
+
+TESTING
+Add unit, protocol, transport, permission, filesystem-sandbox, cleanup, integration, race, benchmark, and soak tests. Test both Go and Python callers through a supervised local socket. Verify that no binary data or unbounded collection crosses the JSON protocol. Run formatting, linting, all tests, race tests, compile checks, builds, and benchmark/soak commands.
+
+ACCEPTANCE CRITERIA
+Python plugins can safely transfer supported media without loading whole files into memory. Transfers are authenticated, bounded, cancellable, resumability behavior is explicit, and abandoned resources are cleaned. Existing commands, watchers, inline/callback routing, storage RPC, and plugin restart semantics remain compatible. Benchmark results show no regression in normal text-command latency.
+
+DELIVERABLE
+Implement code, tests, benchmarks, documentation, and compatibility updates. Report all limits, supported media operations, benchmark results, cleanup guarantees, and remaining unsupported cases.

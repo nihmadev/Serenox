@@ -1,0 +1,31 @@
+TASK: Implement complete inline-query and callback routing for external plugins.
+
+Repository: /home/nihmadev/Serenox
+
+Read the existing architecture, protocol v1 DTOs, application dispatcher, inline manager, plugin supervisor, Python sidecar, Go SDK, and all related tests before editing. Preserve existing user changes. Do not rewrite unrelated components and do not introduce Telegram-library types across the plugin boundary.
+
+OBJECTIVE
+Make inline queries, callback queries, and deleted-message updates first-class events for built-in, Go, and Python plugins. Events must pass through the same bounded, supervised lifecycle as commands and watchers.
+
+REQUIRED WORK
+1. Trace the complete update path from Telegram transport to App, dispatcher, executor, supervisor, RPC, sidecar, and handler invocation.
+2. Extend protocol v1 with explicit bounded metadata declarations for inline handlers and callback handlers. Use optional fields or a new negotiated protocol version only when required. Keep DTOs transport-neutral.
+3. Add validation for handler names, callback data, query IDs, result counts, button sizes, payload sizes, and all collection limits.
+4. Register and unregister inline/callback handlers atomically with commands and watchers. Reject conflicts, invalid capabilities, protected namespaces, and unsupported declarations before publishing a plugin.
+5. Replace any message-only early return in the core dispatcher with typed routing for message, edited message, inline query, callback, and deleted message events.
+6. Route events through bounded per-plugin queues and existing executor policies. Do not create one goroutine or task per event.
+7. Enforce owner, allow-list, plugin permission, timeout, rate-limit, and backpressure rules in the core before plugin execution.
+8. Connect the existing inline manager to the external plugin action path. Support bounded inline answers, edits, deletes, forms, buttons, callback registration, callback expiration, and cleanup.
+9. Update the Python sidecar metadata and SDK decorators so inline and callback handlers are advertised and invoked consistently with commands and watchers.
+10. Keep at-most-once dispatch semantics. Do not replay events after a plugin crash or restart.
+11. Return explicit structured protocol errors for unknown handlers, expired callbacks, unsupported update kinds, invalid results, overload, timeout, and permission denial.
+12. Add observability for routed, matched, queued, rejected, timed-out, failed, expired, and overloaded inline/callback events without unbounded metric cardinality.
+
+TESTING
+Add unit tests for DTO validation, registration conflicts, callback expiry, permission checks, filters, routing, overload, and cleanup. Add Go supervisor/RPC tests and Python sidecar compatibility tests. Add recorded-update end-to-end fixtures for inline queries, callbacks, edited messages, and deleted messages. Add crash, timeout, malformed-frame, and restart cases. Run formatting, linting, all Go tests, race tests, Python tests, compile checks, and build checks.
+
+ACCEPTANCE CRITERIA
+Inline and callback events reach the correct external handlers in recorded and supervised end-to-end tests. No message-only code path silently drops them. All queues, callbacks, action batches, frames, results, and timers remain bounded. Existing command and watcher behavior remains compatible. Documentation and compatibility matrices accurately describe the implemented surface.
+
+DELIVERABLE
+Implement the code and tests, update only necessary documentation, report changed files, test commands, measured limits, and any explicitly unsupported Telegram behavior.

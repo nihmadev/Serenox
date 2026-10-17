@@ -1,0 +1,229 @@
+TASK: Complete live Telegram verification for the native Serenox user-session transport.
+
+Repository: /home/nihmadev/Serenox
+
+Read the current architecture, milestone gates, Telegram transport interfaces,
+gotd adapter, authentication flow, session storage, application lifecycle,
+dispatcher, action execution, media bridge, plugin supervisor, protocol v1,
+configuration, operations documentation, and all related tests before editing.
+Preserve existing user changes. Do not rewrite unrelated components. Do not
+move Telegram-library types across the plugin boundary. Do not add credentials,
+session files, phone numbers, message contents, or real-account identifiers to
+the repository, logs, fixtures, or test output.
+
+OBJECTIVE
+Close the live Telegram verification gap for the currently supported native
+transport. Prove that Serenox can authorize an account through the existing
+login flow, start the daemon non-interactively from a persisted session, verify
+the saved account identity, ingest bounded live updates, execute supported text
+and media actions, recover from disconnects, and shut down without leaked
+resources. Keep unsupported Telegram surfaces explicit instead of claiming full
+Hikka, Pyrogram, or Aiogram compatibility.
+
+The result must distinguish three states clearly:
+
+1. verified by deterministic unit, adapter, recorded, or supervised tests;
+2. verified by an opt-in live-account smoke test;
+3. explicitly unsupported or not live-verified.
+
+REQUIRED WORK
+1. Trace the complete live path from `serenox login` and persisted gotd session
+   through daemon startup, identity verification, gotd update dispatch,
+   bounded ingress, App dispatch, plugin execution, action application, and
+   shutdown. Record the exact ownership and cancellation boundaries.
+
+2. Audit the current live adapter against the protocol contract. Check session
+   loading/saving, authorization state, account identity, peer resolution,
+   access hashes, update conversion, entity conversion, media classification,
+   message IDs, channel IDs, edited messages, deleted messages, HTML entities,
+   reply markup, and transport errors. Fix only behavior that is required by
+   the supported contract or exposed as a false success.
+
+3. Make `serenox login` the only interactive authorization path. The daemon
+   must never prompt for a phone number, login code, or 2FA password. Startup
+   must fail clearly when the session is absent, invalid, unauthorized, or
+   belongs to a different account than the configured owner. Never print API
+   hashes, phone numbers, login codes, 2FA passwords, session bytes, or full
+   authorization errors containing secrets.
+
+4. Add or complete deterministic tests for the live adapter boundary without
+   contacting Telegram. Cover:
+   - missing, malformed, oversized, and atomic session files;
+   - cancellation during session load, save, connect, update wait, and close;
+   - already-started, closed, unauthorized, and identity-mismatch states;
+   - bounded update ingress and cancellation-aware producer backpressure;
+   - new and edited private, group, supergroup, and channel messages;
+   - deleted messages for ordinary chats and channels;
+   - outgoing/incoming ownership and command eligibility;
+   - peer cache capacity, eviction, detached values, and access-hash safety;
+   - message entities, HTML parsing, mentions, replies, forwards, and media
+     classification;
+   - reconnect behavior, bounded retry delay, cancellation, and final errors;
+   - action validation, unknown peers, invalid message IDs, unsupported parse
+     modes, unsupported media, and Telegram API failures.
+
+5. Add supervised integration fixtures that exercise the real local interfaces
+   without a real account. Verify the recorded/live transport interchangeably
+   feeds the App and that the same protocol DTOs reach built-in and external
+   Go/Python plugins. Cover send, reply, edit, delete, action batches,
+   permissions, timeouts, queue overload, plugin restart, and shutdown. Do not
+   weaken at-most-once dispatch semantics to make reconnect tests pass.
+
+6. Reconcile every client and action operation exposed by the Go/Python SDK
+   with the native adapter. For each operation, either:
+   - implement and test the native Telegram mapping;
+   - remove it from the advertised capability surface; or
+   - return a stable structured `unsupported` error before reporting success.
+
+   In particular, audit `join_chat`, `leave_chat`, `send_reaction`, inline
+   answers, callback/client operations, forms, galleries, and media attachment.
+   A method must not look available in the SDK while the native path silently
+   rejects it or fabricates success.
+
+7. Verify supported outbound actions against the transport-neutral protocol:
+   - plain and HTML send;
+   - reply to an existing message;
+   - edit an existing outgoing message;
+   - delete ordinary and channel messages where supported;
+   - URL, callback, and switch-inline reply markup where the native adapter
+     declares support;
+   - supported media attachment through the daemon-owned media bridge, with
+     bounded temporary files and cleanup.
+
+   Return action IDs and structured failures consistently. Do not retry an
+   action automatically after an ambiguous network failure if it could create
+   a duplicate Telegram message. Document any operation whose result is
+   intentionally at-most-once or ambiguous after disconnect.
+
+8. Add an opt-in live-account smoke test or command. It must be impossible to
+   run accidentally in ordinary `make test`, CI, or package verification.
+   Require an explicit environment gate such as `SERENOX_LIVE_TELEGRAM=1` and
+   short-lived environment inputs for API ID/hash, session path, and a target
+   chat or test peer. Reuse an already-authorized session; do not automate
+   account creation, bypass 2FA, or store credentials.
+
+   The smoke test must:
+   - validate all required inputs before opening the client;
+   - verify the authenticated account identity and target peer;
+   - use a unique, recognizable, bounded marker for created test messages;
+   - send a text message, observe the corresponding live update, and verify
+     the converted DTO fields;
+   - edit the message and verify an edited update when the target supports it;
+   - reply to the message and verify reply linkage;
+   - exercise HTML/entity conversion if enabled by the target;
+   - delete only messages created by the smoke test and verify deletion when
+     the update type is available;
+   - exercise media only when the live media adapter and target are explicitly
+     configured for it;
+   - clean up created messages on success and best effort on failure;
+   - redact all secrets and avoid printing message text beyond the unique
+     marker needed for diagnosis;
+   - fail with actionable instructions when Telegram rejects an operation,
+     the peer is inaccessible, flood limits apply, or the session is stale.
+
+   The smoke test may be implemented as an opt-in Go test, a documented CLI
+   command, or both. It must have a dry-run/input-validation path that performs
+   no Telegram mutation.
+
+9. Add disconnect and recovery verification. Use deterministic fake-client
+   tests for immediate disconnect, reconnect, delayed reconnect, cancellation,
+   full update queues, and action failure. If a live smoke test includes a
+   reconnect scenario, make it opt-in and bounded; never require network
+   manipulation or an unbounded wait in the normal test suite.
+
+10. Audit resource ownership and cleanup. After normal shutdown, cancellation,
+    failed authorization, failed identity verification, plugin crash, action
+    timeout, reconnect exhaustion, and live smoke-test failure, verify that:
+   - gotd/client goroutines terminate;
+   - update and action queues are no longer admitted;
+   - child plugin processes and process groups are stopped;
+   - local sockets and temporary media files are removed;
+   - session writes are atomic and have restrictive permissions;
+   - no pending RPC or reverse-RPC waiter remains;
+   - storage closes cleanly;
+   - RSS, goroutine, and file-descriptor counts return to an acceptable
+     baseline in the resource fixture.
+
+11. Add bounded observability for live transport state: authorization state,
+    identity verification, connection attempts, reconnects, update conversion
+    failures, ingress depth, dropped/rejected updates, action latency,
+    Telegram errors, flood/rate-limit errors, shutdown duration, and cleanup
+    failures. Do not use message IDs, chat IDs, usernames, URLs, filenames,
+    tokens, or update contents as unbounded metric labels.
+
+12. Profile the live hot paths only after correctness tests exist. Benchmark
+    update conversion, command dispatch, action validation, peer lookup, and
+    media materialization. Fix measured regressions without removing limits.
+    Pay particular attention to repeated file open/close operations during
+    media writes, duplicate JSON conversion, unnecessary allocations, and
+    sequential action behavior. Preserve bounded backpressure and Telegram
+    flood protection.
+
+13. Update only the necessary documentation:
+   - `docs/milestones.md` with the exact M5 gate status;
+   - `docs/compatibility.md` with verified, partial, and unsupported live
+     surfaces;
+   - `docs/authentication.md`, `docs/setup.md`, and `docs/operations.md` with
+     the tested login/session/startup/shutdown behavior;
+   - `docs/media-api.md` if live media verification changes its claims;
+   - `README.md` if the product status or supported Telegram surface changes.
+
+   Document the environment variables, target-peer requirements, cleanup
+   behavior, privacy assumptions, rate-limit risks, and exact commands for the
+   opt-in live smoke test. Do not claim a completed live gate based only on
+   recorded fixtures or source inspection.
+
+TESTING
+Add unit, protocol, adapter, recorded, supervised, lifecycle, permission,
+reconnect, cleanup, race, benchmark, and opt-in live smoke tests. Keep all
+credential-free tests deterministic and network-independent. Ensure live tests
+are skipped unless the explicit gate and all required inputs are present.
+
+Run at minimum:
+
+```text
+make fmt-check
+make lint
+make test
+make test-race
+make build
+go test -run '^$' -bench . -benchmem ./...
+SERENOX_SOAK=1 go test -run 'Soak|Resource' -count=1 ./...
+```
+
+Run the live smoke test separately, only with an authorized test account and a
+safe target peer. Report the exact command, whether it was skipped or run,
+which operations succeeded, which were unsupported by design, and whether all
+created test messages were cleaned up. Never include secret values in the
+report.
+
+ACCEPTANCE CRITERIA
+1. `serenox login` authorizes and persists a session without leaking secrets.
+2. The daemon starts non-interactively from the saved session, verifies the
+   account identity, and fails closed for invalid or mismatched sessions.
+3. Deterministic adapter and supervised fixtures cover all supported update,
+   action, reconnect, permission, timeout, overload, and cleanup behavior.
+4. The opt-in live smoke test proves the real account path for the documented
+   subset, including live update ingestion and supported outbound actions.
+5. No SDK method reports fabricated success for a native operation that is not
+   implemented. Unsupported behavior is stable, documented, and capability-
+   accurate.
+6. No credentials, sessions, private user data, or live identifiers are added
+   to source control, fixtures, logs, crash output, or benchmark artifacts.
+7. Shutdown, reconnect exhaustion, plugin failure, and live-test failure do
+   not leak goroutines, processes, sockets, file descriptors, temporary media,
+   or pending RPC requests.
+8. Existing recorded-update, command, watcher, storage, media, inline/callback,
+   and plugin lifecycle tests remain compatible.
+9. `docs/milestones.md` marks the live Telegram gate complete only when every
+   required acceptance criterion and the opt-in live evidence are available.
+
+DELIVERABLE
+Implement the code, tests, opt-in live smoke path, benchmarks, and necessary
+documentation updates. Report changed files, the exact supported Telegram
+surface, stable unsupported operations, environment variables, resource limits,
+cleanup guarantees, benchmark results, live-test evidence, skipped checks, and
+all verification commands. If a real-account run is impossible because no safe
+credentials or target peer are available, leave the credential-free work
+complete, add the runnable gated smoke test, keep the milestone unchecked, and
+state precisely what external evidence remains.

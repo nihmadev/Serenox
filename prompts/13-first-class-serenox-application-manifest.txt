@@ -1,0 +1,500 @@
+TASK: Implement a first-class declarative self-hosting and release manifest for Serenox.
+
+Repository: /home/nihmadev/Serenox
+
+Read the current architecture, configuration loader, CLI, daemon bootstrap,
+application lifecycle, storage interface and actual backends, plugin package
+format, plugin supervisor, jobs, media service, control socket, observability,
+operations documentation, migration kit, all prompts in `prompts/`, and all
+related tests before editing. Preserve existing user changes. Do not rewrite
+unrelated components. Do not assume that a documented backend or feature is
+implemented: verify the current code first.
+
+The current checkout uses a bounded atomic JSON `FileStore` by default. The
+manifest must not silently assume bbolt, PostgreSQL, Redis, object storage, or
+an external orchestrator already exists.
+
+MODULARITY REQUIREMENT
+
+This is a platform feature, not permission to create a deployment monolith.
+
+- Do not add or leave behind an implementation source file larger than 450
+  non-blank lines. Split files by responsibility when necessary.
+- Keep individual functions below 80 non-blank lines unless a parser or
+  serialization routine genuinely needs more; split validation and mapping
+  into focused helpers.
+- Separate manifest DTOs, YAML decoding, validation, secret resolution,
+  effective configuration, service registry, storage backends, release planning,
+  rendering, CLI commands, and tests into separate packages/files.
+- Use narrow interfaces and dependency injection for clocks, filesystems,
+  service clients, process managers, locks, stores, and health probes.
+- Every vertical slice must remain buildable and tested before the next slice.
+- Do not create a second scheduler, queue, plugin supervisor, or lifecycle
+  engine beside the existing bounded components.
+
+PRODUCT INTENT
+
+Serenox must be easy to run as a standalone self-hosted daemon and capable of
+growing into a production deployment with PostgreSQL, Redis, S3-compatible
+object storage, backups, health checks, and controlled releases. A user should
+be able to describe the application in one `serenox.yaml`, validate it without
+starting Telegram, render deployment artifacts, apply a release, inspect the
+effective configuration, and roll back a failed activation.
+
+`serenox.yaml` is an application/deployment manifest. It is not a plugin
+package format. `.srnx` remains the only plugin distribution artifact and its
+canonical `manifest.json` remains authoritative for plugin payloads,
+capabilities, permissions, and resource policies.
+
+The manifest describes desired state. The daemon still owns Telegram session
+admission, plugin supervision, bounded execution, jobs, actions, storage
+permissions, media ownership, and shutdown ordering. An external service
+manager such as systemd, Docker Compose, Kubernetes, or another init system
+owns the long-running process unless the manifest is used through the direct
+`serenox run` command.
+
+OBJECTIVE
+
+Implement a production-grade `serenox.yaml` control plane with:
+
+- strict typed YAML parsing and schema validation;
+- deterministic effective configuration and migration from legacy JSON;
+- environment/file-based secret references with redaction;
+- optional PostgreSQL, Redis, and S3-compatible service declarations;
+- a pluggable persistent storage backend without changing plugin SDKs;
+- service readiness, health, capability, and dependency checks;
+- release plan/apply/status/rollback lifecycle;
+- safe one-off administrative operations;
+- systemd and Docker Compose rendering;
+- backup and restore workflows for local and external state;
+- structured logs, metrics, and actionable diagnostics;
+- compatibility with current standalone file-backed operation.
+
+Do not implement a generic shell runner. Do not run arbitrary commands from
+the manifest, install packages at runtime, expose database credentials to
+plugins, or claim high availability without single-session coordination and
+tested failover semantics.
+
+DESIGN CONTRACT
+
+1. Manifest identity and schema
+
+Define a versioned top-level document, for example:
+
+```yaml
+apiVersion: serenox.app/v1
+kind: Application
+metadata:
+  name: personal-serenox
+  version: 1
+
+runtime:
+  dataDir: ./data
+  configMode: production
+  logLevel: info
+  shutdownTimeout: 20s
+
+telegram:
+  enabled: true
+  apiId: ${SERENOX_TELEGRAM_API_ID}
+  apiHash: ${SERENOX_TELEGRAM_API_HASH}
+  sessionFile: telegram.session.json
+
+storage:
+  backend: file
+  path: state.json
+
+services: {}
+
+plugins: []
+
+release:
+  retainVersions: 3
+  healthTimeout: 30s
+```
+
+The exact field names may be adjusted to fit existing Go conventions, but the
+schema must be explicit, versioned, documented, and rejected on unknown fields
+unless a reviewed forward-compatibility rule applies. YAML aliases, anchors,
+duplicate keys, recursive structures, excessively deep values, oversized
+strings, oversized collections, and ambiguous scalar types must be bounded or
+rejected deterministically.
+
+Required top-level domains are `apiVersion`, `kind`, `metadata`, `runtime`,
+`telegram`, `storage`, `services`, `plugins`, and `release`. Optional domains
+may include `observability`, `backup`, `deployment`, and `ha`, but every
+optional domain must have a concrete implementation and tests.
+
+2. Configuration precedence and legacy compatibility
+
+Define one unambiguous precedence rule. The recommended order is:
+
+```text
+explicit CLI flags > resolved secret/environment values > serenox.yaml >
+legacy config.json > built-in defaults
+```
+
+Implement:
+
+- `serenox run --manifest serenox.yaml`;
+- automatic discovery only when it is unambiguous and documented;
+- `serenox manifest check --file serenox.yaml`;
+- `serenox config effective --manifest serenox.yaml`;
+- `serenox config migrate --from config.json --to serenox.yaml`;
+- explicit conflict errors when both manifest and legacy JSON provide
+  incompatible values, unless the precedence rule resolves the conflict;
+- no silent rewrite of legacy files;
+- a canonical effective configuration representation with secrets redacted.
+
+Existing `--config` JSON workflows must continue to work. A manifest-backed
+run must produce the same core `config.Runtime` and `app.Options` contracts
+where the selected features are equivalent. Do not fork startup behavior into
+two subtly different daemons.
+
+3. Secrets and sensitive values
+
+Support typed references rather than requiring plaintext secrets in YAML:
+
+- environment reference, such as `${VAR}` or an explicit `env: VAR` value;
+- mode-0600 file reference beneath an allowed directory;
+- existing account-local secret mechanisms for Telegram and control-bot
+  credentials;
+- explicit missing-secret and malformed-secret errors before network startup.
+
+Define whether a value is secret in the schema. Redact secrets from:
+
+- effective configuration output;
+- errors and validation reports;
+- structured logs;
+- release plans;
+- diagnostics, metrics, crash reports, and process arguments where possible.
+
+Reject path traversal, insecure secret files, symlinks where unsafe, embedded
+private keys in package metadata, and secret interpolation into arbitrary log
+messages. The manifest must never grant a plugin access to the raw secret map.
+
+4. Service registry and dependency model
+
+Add a typed service registry for operator-provided services. At minimum define
+service kinds:
+
+- `postgres` for durable relational state;
+- `redis` for optional coordination, locks, cache, and bounded ephemeral work;
+- `object_storage` for S3-compatible media, package, or backup objects.
+
+Each service declaration must include only typed, bounded fields such as:
+
+- service name and kind;
+- required/optional state;
+- endpoint or secret reference;
+- TLS policy and certificate reference where applicable;
+- connection pool limits and timeouts;
+- health-check policy;
+- total byte, request, connection, or retry budgets.
+
+Do not permit arbitrary connection strings to be printed, sent to plugins, or
+used to bypass the host HTTP/network policy. Validate hostnames, schemes,
+ports, TLS settings, credentials references, and private-network policy.
+
+The core must fail before Telegram admission if a required service is missing
+or unhealthy. Optional services must degrade explicitly and must not silently
+change durability guarantees. `serenox service check` must check declared
+services without starting a Telegram session.
+
+5. PostgreSQL storage backend
+
+Implement PostgreSQL only behind the existing narrow `storage.Store` contract
+and a backend selector such as `storage.backend: postgres`. Do not expose SQL,
+database handles, or transactions to Go/Python plugins.
+
+The backend must provide:
+
+- schema versioning and idempotent migrations;
+- namespaced plugin/account isolation matching the current host storage rules;
+- atomic set/delete/batch semantics;
+- bounded list operations;
+- optimistic revision or equivalent protection for concurrent job updates;
+- bounded connection pool, query timeout, statement timeout, and retry policy;
+- TLS and credential redaction;
+- clear behavior for unavailable, read-only, serialization, and migration
+  failures;
+- graceful shutdown and connection cleanup;
+- deterministic tests using interfaces plus an opt-in real PostgreSQL test.
+
+The file backend remains the default and must continue to work without any
+external service. Do not replace it with PostgreSQL unconditionally.
+
+Jobs, plugin state, and core metadata may share the backend only through
+explicit internal tables/namespaces. Never store media bytes, Telegram session
+secrets, arbitrary logs, or unbounded action results in PostgreSQL JSON values.
+
+6. Redis coordination backend
+
+Redis is optional and must not be the sole source of truth for durable state.
+Implement only the narrowly justified capabilities:
+
+- single-leader lock for a Telegram account/session;
+- bounded distributed rate-limit coordination where configured;
+- short-lived cache or coordination state;
+- optional bounded event notification between controlled core instances.
+
+Define lease duration, renewal, clock-skew handling, fencing token, loss of
+leadership, startup race, network partition, and shutdown behavior. A lost
+Redis lease must stop Telegram admission before another instance can safely
+take over, or the implementation must explicitly remain single-instance only.
+
+Do not implement a Redis-backed queue that duplicates `internal/executor` or
+`internal/jobs`. Do not allow two active instances to process the same account
+without a tested fencing/leader-election contract. Add an opt-in real Redis
+integration test and deterministic fake-lock tests.
+
+7. Object storage backend
+
+Define an optional S3-compatible adapter for MinIO/Amazon S3-compatible
+endpoints where it materially helps media, backups, or release artifacts.
+
+The adapter must:
+
+- use bounded multipart/streaming transfers;
+- validate bucket, prefix, object size, checksum, and content type;
+- enforce per-service concurrency and byte budgets;
+- use TLS and explicit endpoint policy;
+- never expose credentials or raw object clients to plugins;
+- clean up incomplete multipart uploads;
+- report unavailable and partial-transfer states explicitly.
+
+Do not make object storage required for ordinary text-only standalone runs.
+
+8. Release model
+
+Implement a desired-state release lifecycle:
+
+```text
+load manifest
+  -> resolve secrets
+  -> validate schema and effective config
+  -> verify services and plugin packages
+  -> produce release plan
+  -> operator confirmation or explicit noninteractive approval
+  -> run safe migrations
+  -> stage files and packages
+  -> activate compatible versions
+  -> start/reload through existing lifecycle
+  -> run health/readiness checks
+  -> commit release record
+  -> rollback on failed activation or failed health
+```
+
+Add typed release records containing manifest digest, core version, plugin
+versions, backend selection, schema version, timestamps, status, and bounded
+error summaries. Never persist secrets in release records.
+
+Required CLI surfaces:
+
+```text
+serenox manifest check --file serenox.yaml
+serenox config effective --manifest serenox.yaml
+serenox service check --manifest serenox.yaml
+serenox release plan --manifest serenox.yaml
+serenox release apply --manifest serenox.yaml
+serenox release status --manifest serenox.yaml
+serenox release rollback --manifest serenox.yaml [--release ID]
+serenox backup create --manifest serenox.yaml
+serenox backup verify --manifest serenox.yaml
+serenox backup restore --manifest serenox.yaml --input PATH
+```
+
+Release apply must be idempotent for the same canonical manifest digest. A
+failed release must preserve the previous active configuration and plugin
+versions. Core migrations must define rollback or forward-recovery behavior;
+never claim rollback after an irreversible database migration without a
+documented backup/restore path.
+
+Do not execute arbitrary `preDeploy`, `postDeploy`, `run`, or shell strings from
+YAML. Release hooks must be a finite allowlisted set of typed Serenox
+operations, plugin-declared migration handlers, or explicit CLI subcommands
+invoked by the operator outside the daemon.
+
+9. One-off operations and process roles
+
+Provide safe one-off operations inspired by Heroku's release and one-off dyno
+model, but keep process ownership explicit:
+
+- storage export/import;
+- backup create/verify/restore;
+- service check;
+- plugin verify/install/rollback;
+- migration status/apply;
+- jobs inspect/trigger/clear;
+- diagnostics snapshot.
+
+These operations must use existing bounded services and lifecycle contracts.
+They must not start an unmanaged daemon, spawn detached descendants, bypass
+permissions, or open a second Telegram session.
+
+Add a typed `deployment` section that can render, but does not silently apply:
+
+- a systemd unit with restart, stop timeout, environment file, working
+  directory, and persistent data path;
+- Docker Compose with Serenox, PostgreSQL, Redis, MinIO, and optional
+  observability services;
+- a health/readiness contract for the generated deployment.
+
+Rendering must be deterministic, escape values safely, omit secrets by default,
+and require explicit flags to include secret references. Generated deployment
+files must not contain plaintext secret values.
+
+10. Health, readiness, and observability
+
+Add distinct states for:
+
+- configuration valid/invalid;
+- services reachable/unreachable/degraded;
+- storage writable/read-only/recovering;
+- Telegram authorized/disconnected/leader-lost;
+- plugin activation and health;
+- release applying/healthy/failed/rolled-back.
+
+Expose health through the existing local control surface or a new explicitly
+opt-in local-only endpoint. Do not add an unauthenticated public listener.
+
+Export bounded metrics for manifest validation, service health, connection pool
+usage, release plan/apply/rollback, migration status, backup operations,
+leader transitions, storage errors, and generated deployment artifacts. Never
+use DSNs, secrets, SQL, object keys, message IDs, chat IDs, payloads, or
+unbounded release IDs as metric labels.
+
+11. Backup and restore
+
+Define what belongs in a backup:
+
+- file-backed state;
+- PostgreSQL schema/data required by Serenox;
+- plugin active-version records and verified package metadata;
+- jobs and bounded release metadata;
+- optionally media/object references, never implicit large binary inclusion.
+
+Telegram session and control-bot secrets require an explicit opt-in policy and
+must be encrypted or excluded by default. Backups must have a manifest,
+checksum, format version, size limits, atomic staging, corruption detection,
+and no path traversal. Restore must stop or fence the daemon, validate before
+replacement, preserve the current state until commit, and report recovery
+instructions on failure.
+
+12. Security and compatibility
+
+Enforce permissions at service resolution and use, not only at manifest parse.
+An application manifest must not grant a plugin capabilities that its `.srnx`
+package did not request and receive.
+
+Keep these boundaries:
+
+- no raw PostgreSQL, Redis, S3, socket, shell, or Telegram client objects in
+  plugins;
+- no runtime `pip`, package downloads, arbitrary binaries, or shell execution;
+- no public control endpoint by default;
+- no plaintext secrets in YAML, generated files, logs, metrics, backups, or
+  release records;
+- no exactly-once claim for Telegram mutations or distributed work;
+- no automatic migration from a single-instance file store to multi-instance
+  mode without an explicit operator action.
+
+Update the compatibility matrix to distinguish verified, partial, planned, and
+unsupported service/backends. Keep JSON configuration, local file storage,
+recorded Telegram mode, existing `.srnx` installation, plugin rollback, jobs,
+media, HTTP, control bot, and lifecycle behavior compatible.
+
+TESTING
+
+Add focused tests for:
+
+- YAML decoding, duplicate/unknown fields, anchors, scalar coercion, limits,
+  canonicalization, and schema versions;
+- effective configuration precedence and JSON-to-YAML migration;
+- secret resolution, missing values, insecure files, redaction, and path
+  traversal;
+- service declaration validation and readiness/degraded/failure states;
+- file storage behavior and all existing atomicity/limit guarantees;
+- PostgreSQL store transactions, isolation, migrations, connection failure,
+  read-only mode, pool limits, and opt-in live integration;
+- Redis fake leases, fencing tokens, renewal, loss of leadership, races, and
+  opt-in live integration;
+- object storage checksums, streaming limits, cleanup, and failure recovery;
+- release planning, canonical digest idempotency, approval, migration,
+  activation, health failure, rollback, crash recovery, and stale state;
+- backup create/verify/restore, corruption, size limits, secrets policy, and
+  atomic replacement;
+- CLI command parsing, errors, noninteractive mode, and redacted output;
+- deterministic systemd/Compose rendering and secret omission;
+- local-only health/readiness authentication and bounded metrics;
+- plugin permission checks, package policy, lifecycle, unload, restart,
+  rollback, uninstall, and account/session leader isolation;
+- fake clock, timeout, cancellation, concurrent release attempts, shutdown,
+  and no-leaked goroutine/process/socket/file behavior.
+
+Use opt-in environment gates for real external services, for example:
+
+```text
+SERENOX_POSTGRES=1
+SERENOX_REDIS=1
+SERENOX_OBJECT_STORAGE=1
+```
+
+Normal tests must remain credential-free and must not require Docker, Telegram,
+PostgreSQL, Redis, or S3. Run at minimum:
+
+```text
+make fmt-check
+make lint
+make test
+make test-race
+make build
+go test -run '^$' -bench . -benchmem ./...
+SERENOX_POSTGRES=1 go test ./internal/storage/... ./internal/release/...
+SERENOX_REDIS=1 go test ./internal/coordination/...
+SERENOX_OBJECT_STORAGE=1 go test ./internal/objectstorage/...
+```
+
+ACCEPTANCE CRITERIA
+
+1. A clean standalone installation can start from a validated `serenox.yaml`
+   with only a persistent local `data_dir` and no external services.
+2. Existing JSON configuration remains supported and migration to YAML is
+   explicit, deterministic, loss-aware, and non-destructive.
+3. PostgreSQL can be selected as a durable host storage backend without
+   changing Go/Python plugin APIs or leaking database objects.
+4. Redis is optional, never the sole durable state store, and cannot permit two
+   instances to own one Telegram session under the documented HA mode.
+5. S3-compatible object storage is optional, bounded, checksummed, and used
+   only through typed host-owned services.
+6. Secrets never appear in effective configuration, plans, logs, generated
+   files, metrics, backups, process arguments, or release records.
+7. Release apply is idempotent, health-gated, crash-safe within the documented
+   migration limits, and restores the previous active state after failed
+   activation.
+8. Backup and restore are versioned, validated, bounded, atomic, and explicit
+   about Telegram/control-bot secret handling.
+9. systemd and Docker Compose renderers are deterministic and do not execute
+   commands or silently deploy resources.
+10. All external services, queues, locks, connections, files, processes,
+    secrets, timers, metrics, and pending operations remain bounded and are
+    cleaned up on shutdown.
+11. No arbitrary shell runner, runtime dependency installer, public unauthenticated
+    endpoint, exactly-once claim, or second execution engine is introduced.
+12. Documentation accurately describes the current file backend, optional
+    service backends, deployment model, limits, migrations, failure modes,
+    rollback guarantees, and unsupported cases.
+
+DELIVERABLE
+
+Implement the manifest schema, loader, validation, precedence, migration,
+secret resolver, service registry, file/PostgreSQL/Redis/object-storage
+integration as supported by the final compatibility matrix, release lifecycle,
+backup/restore, CLI, health/readiness, systemd/Compose renderers, tests,
+fixtures, examples, benchmarks, and necessary documentation.
+
+Keep implementation modular and update only related files. Report changed
+files, final YAML schema, precedence rules, secret sources, service contracts,
+storage semantics, leader-election guarantees, release state machine, backup
+format, renderer outputs, resource limits, verified/partial/unsupported
+features, migration behavior, and every verification command.

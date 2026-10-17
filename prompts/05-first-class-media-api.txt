@@ -1,0 +1,147 @@
+TASK: Implement a first-class, bounded media API for Serenox core, Go plugins, and Python plugins.
+
+Repository: /home/nihmadev/Serenox
+
+OBJECTIVE
+
+Allow external Go and Python plugins to safely inspect, download, transform, upload,
+and send Telegram media without exposing Telegram-library objects, arbitrary host
+filesystem paths, or unbounded memory. The same transport-neutral contract must work
+for both plugin runtimes.
+
+REQUIRED WORK
+
+1. Inspect the existing plugin protocol, Go SDK, Python SDK/sidecar, supervisor RPC,
+   permissions, Telegram adapter, action execution, package manifests, lifecycle,
+   cleanup, metrics, and all relevant tests before editing. Preserve unrelated user
+   changes. Do not use Telegram-library types across the plugin boundary.
+
+2. Define a versioned, transport-neutral media contract covering:
+   - media metadata: opaque handle, kind, MIME type, filename, size, checksum;
+   - source and destination ownership/account identity;
+   - download, upload, attach, and delete/cleanup operations;
+   - resumability policy, sequence numbers, completion state, and error states;
+   - supported media kinds and format conversion metadata;
+   - explicit maximum sizes, chunk sizes, transfer duration, idle timeout,
+     concurrent transfers, and per-plugin quotas.
+
+3. Keep binary data out of JSON control frames. Implement an authenticated,
+   bounded binary stream associated with the existing RPC request ID, or another
+   equivalent local streaming transport. Validate authentication, ownership,
+   sequence/order, declared size, actual size, checksum, deadlines, cancellation,
+   and finalization. Reject malformed, duplicated, stale, oversized, or incomplete
+   transfers with stable structured errors.
+
+4. Implement the host/core media service:
+   - download media referenced by an opaque message media handle;
+   - upload media from a plugin stream into a controlled temporary store;
+   - expose metadata without downloading content;
+   - attach uploaded media to reply/send/edit actions;
+   - map supported operations to the Telegram adapter;
+   - return explicit unsupported errors for unsupported Telegram media types;
+   - never accept arbitrary filesystem paths from a plugin;
+   - remove abandoned temporary files on timeout, cancellation, disconnect,
+     plugin crash, restart, uninstall, and daemon shutdown.
+
+5. Extend protocol capabilities and permissions. Define and enforce the minimum
+   declarations required for media read, media write, media attach, and any
+   network-adjacent operation. Enforce checks immediately before every transfer
+   and media action. Keep plugin/account/peer ownership boundaries explicit.
+
+6. Extend the Go protocol types and Go SDK with typed media clients and helpers.
+   The API must support streaming from io.Reader/io.Writer or equivalent bounded
+   interfaces, context cancellation, deadlines, progress, checksum verification,
+   and metadata inspection. Do not add an in-memory convenience API that can load
+   an unbounded file.
+
+7. Extend the Python protocol models, sidecar, and SDK with equivalent typed async
+   APIs for metadata, download, upload, and media attachment. Support bounded
+   streams or controlled temporary files only. Reject arbitrary paths, unbounded
+   byte strings, implicit network access, and unsupported operations with an
+   actionable documented exception/error.
+
+8. Extend action DTOs and Telegram action execution so plugins can:
+   - reply to the command with converted media;
+   - send converted media to a chat;
+   - preserve reply-to relationships;
+   - set filename, MIME type, caption, parse mode, and optional media attributes;
+   - attach media only through opaque handles or an authenticated upload result.
+   Action batches must remain bounded and report per-action results without hiding
+   partial failures.
+
+9. Add a safe conversion example plugin or fixture for both runtimes. It must
+   implement `.convert <source>-<target>` on a message with an attached image,
+   validate the command and source/target formats, stream the input, convert it
+   using a documented implementation, upload the result, and reply with the
+   converted file. It must handle missing media, invalid syntax, unsupported
+   formats, oversized files, cancellation, and conversion errors clearly.
+
+10. Add tests for both Go and Python callers through a supervised local socket:
+    - protocol serialization and validation;
+    - handshake capability negotiation;
+    - permission enforcement;
+    - bounded chunking and backpressure;
+    - checksum, size, sequence, stale-handle, duplicate-request, and malformed
+      chunk failures;
+    - cancellation, deadline, disconnect, plugin crash, daemon shutdown, and
+      restart cleanup;
+    - temporary-file sandboxing and path traversal rejection;
+    - concurrent-transfer and per-plugin quota limits;
+    - Telegram adapter mapping for every supported media kind;
+    - unsupported media operations and stable error codes;
+    - `.convert png-jpg` and at least one reverse conversion;
+    - no binary payloads in JSON frames;
+    - no leaked goroutines, child processes, sockets, handles, or temporary files.
+
+11. Add bounded observability for active transfers, bytes read/written, duration,
+    throughput, queue delay, cancellations, timeouts, checksum failures, rejected
+    bytes, quota violations, adapter failures, and cleanup failures. Keep metric
+    labels bounded and redact filenames, captions, handles, tokens, and content
+    where appropriate.
+
+12. Update the protocol, plugin-development, Go-plugin, Python-plugin,
+    compatibility, operations, and package documentation. Document the exact
+    limits, supported media kinds, permissions, security model, streaming behavior,
+    resumability, temporary-file lifecycle, conversion guarantees, and all known
+    unsupported cases. Keep documentation synchronized with the implementation.
+
+ENGINEERING CONSTRAINTS
+
+- Keep protocol versioning and backward compatibility explicit.
+- Do not expose gotd, Pyrogram, Aiogram, Telethon, or raw Telegram objects.
+- Do not put binary data or unbounded collections into JSON frames.
+- Do not allow arbitrary plugin filesystem access or runtime package installation.
+- Do not introduce unbounded queues, retries, caches, timers, or background tasks.
+- Every transfer and conversion must be cancellable and deadline-aware.
+- Use atomic ownership and cleanup transitions for all temporary resources.
+- Prefer standard-library or well-maintained Go/Python libraries; pin dependencies
+  and document licensing and format limitations.
+- Keep Go and Python behavior equivalent at the protocol and capability level.
+- Preserve existing command, watcher, storage, inline, lifecycle, install, and
+  rollback behavior.
+- Do not weaken existing security, frame, queue, rate, or package limits.
+
+VERIFICATION
+
+Run formatting, static checks, unit tests, protocol tests, integration tests,
+race tests, compile checks, package build/verify/install tests, and the existing
+repository test suite. Add focused commands for media tests and report their
+results. Verify that tests exercise both Go and Python implementations through
+the real supervised transport, not only direct helper calls.
+
+DELIVERABLE
+
+Implement the complete feature, tests, documentation, compatibility updates,
+and a minimal `.convert` example for both runtimes. Report:
+
+- the final media DTOs and RPC/streaming methods;
+- all limits and permissions;
+- supported Telegram media operations and formats;
+- cleanup and cancellation guarantees;
+- changed files;
+- exact verification commands and results;
+- remaining unsupported cases or migration requirements.
+
+Do not claim the media API is complete if any required operation is only a stub,
+silently drops content, bypasses permission checks, or depends on undocumented
+behavior.

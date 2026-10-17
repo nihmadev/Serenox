@@ -1,0 +1,58 @@
+# Legacy/reference trees and agent-local transaction artifacts
+/hikka/
+/.codex-transaction/
+/sidecar/python/.verification/
+
+# Local build, release, and tool output
+.cache/
+.tools/
+bin/
+dist/
+*.srnx
+*.tar.gz
+*.zip
+*.tmp
+*.pid
+*.sock
+*.log
+.build-tmp/
+prompts/
+.txt
+
+# Runtime state and credentials
+config.json
+data/
+*.session
+*.session.json
+*.db
+*.sqlite
+*.sqlite3
+
+# Go build/test/profiling output
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.prof
+coverage.out
+
+# Python environments and caches
+.venv/
+venv/
+env/
+sidecar/python/.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+**/__pycache__/
+*.py[cod]
+
+# Editors and operating-system noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

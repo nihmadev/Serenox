@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling==1.28.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "serenox-python-sidecar"
+version = "0.1.0"
+description = "Isolated Python compatibility host and SDK for Serenox"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "AGPL-3.0-only" }
+authors = [{ name = "Serenox contributors" }]
+dependencies = []
+
+[project.scripts]
+serenox-python-sidecar = "serenox_sidecar.__main__:main"
+
+[dependency-groups]
+dev = [
+  "pyrefly==1.2.0",
+  "ruff==0.16.4",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/serenox_sdk", "src/serenox_sidecar"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["ASYNC", "B", "E", "F", "I", "RUF", "SIM", "UP", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ASYNC230"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pyrefly]
+project-includes = ["src/**/*.py", "tests/**/*.py"]
+python-version = "3.10"
+search-path = ["src"]

@@ -1,0 +1,569 @@
+TASK: Implement the complete production control-bot bridge for Serenox.
+
+Repository: /home/nihmadev/Serenox
+
+Read the existing architecture, Telegram user-session transport, Bot API/
+inline manager, protocol v1 DTOs and validators, App admission and dispatcher,
+executor, plugin supervisor, Go SDK, Python SDK/sidecar, action results,
+storage, permissions, configuration, CLI, observability, compatibility matrix,
+all prompts in `prompts/`, and all related tests before editing. Preserve
+existing user changes. Do not rewrite unrelated components. Do not expose
+gotd, Pyrogram, Aiogram, Bot API, or any other Telegram-library object across
+the plugin boundary. Do not treat the attached visual/example or external
+module list as repository requirements; use them only as product/UI reference.
+
+PRODUCT INTENT
+Serenox already operates a Telegram user account and supports ordinary
+owner-authored commands, inline handlers, callbacks, forms, lists, and
+galleries. Add a second, optional control surface: the owner's own Telegram
+bot can be attached to one Serenox account and used to invoke only explicitly
+exposed control commands through `@bot query`, private bot commands, and
+bounded inline keyboards.
+
+The bot is a UI and transport adapter, not a second user session and not a
+general-purpose chatbot. Plugin business logic still runs inside the existing
+bounded, supervised executor. Actions that change the owner's Telegram account
+continue to use the user session; actions that render the control UI use the
+Bot API transport. The distinction must be explicit in the protocol and action
+execution path.
+
+The existing inline-command/inline-handler surface remains supported. This
+feature must extend it with a real Bot API transport and an opt-in control
+command surface, not replace or silently reinterpret existing inline handlers.
+
+SCOPE
+This task includes the complete supported control-bot product surface:
+
+- secure bot-token attachment, verification, persistence, rotation, detach,
+  status, start, stop, polling, reconnect, and shutdown;
+- inline mode through `@bot query`;
+- private-chat bot commands and help, where useful for multi-step flows;
+- typed control-command invocation with owner/allow-list authorization;
+- Bot API inline results, bounded forms, callback buttons, URL buttons, and
+  switch-inline buttons;
+- callback handling for both ordinary bot messages and inline messages;
+- edit/delete/answer operations for control-bot UI messages;
+- plugin metadata and permissions that expose only selected commands;
+- shared bounded queues, deadlines, rate limits, action results, idempotency,
+  observability, lifecycle, and cleanup;
+- Go and Python SDK/sidecar parity;
+- deterministic fake-Bot-API, recorded, supervised, and opt-in live-bot tests.
+
+This task does not add arbitrary Bot API method dispatch, a public webhook
+server, a generic bot hosting platform, multi-tenant bots, plugin-controlled
+network sockets, or a way for arbitrary users to operate the user account.
+Webhook support may remain explicitly unsupported unless the repository has a
+separately reviewed inbound-listener design with equivalent authentication and
+resource controls. Long polling is the required production transport for this
+task.
+
+OBJECTIVE
+Make the attached bot a first-class, secure, bounded control transport. A
+plugin author must be able to declare a command as bot-exposed and implement a
+flow such as:
+
+```text
+User types: @my_serenox_bot foundation
+        ↓
+Bot API inline query arrives at Serenox
+        ↓
+Serenox returns one or more bounded inline results
+        ↓
+User selects a result or presses a callback button
+        ↓
+Plugin receives a typed control event
+        ↓
+Plugin renders the next UI step through the Bot API
+        ↓
+Any user-account mutation is executed through the user-session action path
+```
+
+Typing an inline query must not silently perform a destructive or irreversible
+operation. State-changing flows require an explicit result selection, button
+press, confirmation, or private-chat command according to the declared command
+policy.
+
+REQUIRED WORK
+1. Trace the current end-to-end paths before editing:
+   - Bot API or inline manager interfaces, if present;
+   - user-session updates and actions;
+   - protocol v1 update/action DTOs and validation;
+   - App admission, command parsing, inline/callback routing, executor queues,
+     plugin RPC, Python sidecar, and action result handling;
+   - storage, package permissions, configuration, CLI control socket, and
+     observability;
+   - startup, restart, unload, uninstall, account shutdown, and daemon
+     shutdown.
+
+   Record which behavior is implemented, partial, unsupported, source-audited,
+   or only covered by recorded fixtures. Do not infer that a DTO or interface
+   is live support. Preserve the existing rule that ordinary user-session
+   commands are authored by the configured account and that `via_bot` messages
+   are not silently reclassified as owner commands.
+
+2. Define the product and ownership model:
+   - one attached control bot per Serenox account by default;
+   - one bot token belongs to exactly one configured account instance;
+   - token ownership is verified through Bot API `getMe` before persistence or
+     activation;
+   - a bot already used by another running instance must fail clearly rather
+     than silently stealing its update stream;
+   - account identity, bot identity, plugin identity, actor identity, source
+     transport, target chat, and UI message identity remain separate fields;
+   - the bot cannot become a substitute for the user session or gain raw
+     Telegram client access.
+
+   Document whether a token may be attached while the daemon is running and
+   make attach/rotate/detach atomic. A failed verification must not replace a
+   working token. A failed activation must restore the previous working
+   configuration.
+
+3. Implement secure bot-token lifecycle and configuration:
+   - add an explicit core-owned configuration field or secret-store entry for
+     the token, never a plugin configuration value;
+   - support a CLI/control-plane flow for attach, verify, status, rotate,
+     detach, start, and stop;
+   - accept ephemeral environment/CLI input only for attachment and never
+     print it back;
+   - persist the token atomically with restrictive permissions, preferably in a
+     dedicated account data path rather than the general JSON configuration;
+   - redact tokens, bot API URLs containing tokens, usernames when sensitive,
+     and authorization failures from logs, diagnostics, metrics, crash output,
+     and action results;
+   - validate bot username, numeric bot ID, token state, configuration version,
+     and account binding;
+   - ensure detach revokes local use, stops polling, expires live UI state, and
+     removes or securely invalidates the stored secret according to the
+     repository's existing deletion policy;
+   - never send a bot token to a plugin, sidecar, external process, package,
+     HTTP service, or user-session Telegram action.
+
+4. Implement the Bot API transport as a core-owned bounded service:
+   - use long polling with a persisted/update offset policy that is explicit
+     about crash recovery and duplicate updates;
+   - validate every received update before admission;
+   - use bounded request/response bodies, headers, timeouts, polling interval,
+     reconnect backoff, concurrent requests, and pending requests;
+   - prevent one stuck Bot API request from blocking user-session updates or
+     ordinary owner commands;
+   - stop polling before token rotation, detach, plugin unload when required,
+     and daemon shutdown;
+   - cancel all in-flight requests and wait for transport goroutines to exit;
+   - classify unauthorized token, conflict/getUpdates ownership, flood wait,
+     network failure, malformed response, unsupported update, timeout, and
+     shutdown as stable structured errors;
+   - never retry a request after an ambiguous mutation unless the operation has
+     an explicit safe idempotency policy;
+   - keep Bot API URL construction core-owned and do not expose a generic HTTP
+     client to plugins.
+
+   A webhook listener remains out of scope unless it is implemented as a
+   separately authenticated, bounded, documented transport. Do not add an
+   accidental public listener merely to make tests pass.
+
+5. Extend the transport-neutral protocol with explicit control-bot DTOs. Use
+   additive v1 fields where safe and negotiate a new version only when required.
+   Add bounded, validated representations for:
+   - bot identity and control-transport status;
+   - source transport and actor identity;
+   - bot private message and bot command events;
+   - inline query events, including query ID, sender, query text, offset,
+     chat type, and bounded location data only if supported;
+   - callback queries from normal messages and inline messages;
+   - `inline_message_id`, `chat_instance`, chat ID, message ID, and callback
+     data where each is available;
+   - chosen inline results only if they are intentionally supported and covered
+     by a real Bot API update fixture;
+   - bot UI message identity and control-flow/session identity;
+   - typed Bot API errors, retryability, flood-wait duration, and ambiguous
+     outcome state.
+
+   Do not encode raw Bot API JSON, arbitrary update blobs, access hashes,
+   session bytes, library-native values, or unbounded nested user/chat graphs.
+   Define maximum lengths, collection counts, UTF-8 behavior, allowed update
+   kinds, callback payload size, inline result count, pagination cursor size,
+   and state/session size.
+
+6. Extend action and result DTOs with explicit response channels. The current
+   user-session action path must not accidentally send a control-bot reply and
+   vice versa. Support a typed, least-privilege subset such as:
+   - answer inline query;
+   - answer callback query quickly;
+   - send bot message;
+   - edit bot message;
+   - delete bot message where supported;
+   - edit/delete an inline bot message by `inline_message_id`;
+   - send or update bounded inline results and inline keyboards;
+   - switch-inline and URL buttons;
+   - user-session send/reply/edit/delete/media actions as existing actions,
+     explicitly marked as the account-mutation channel.
+
+   Do not solve this with an arbitrary `ClientOperation` name or a hidden
+   `Action.Value` JSON escape hatch. Define exact operation names, fields,
+   permissions, validation, result types, and adapter mappings. Require the
+   correct response-channel identity for every action. A bot action must not
+   accept an arbitrary user-session peer or message ID without a declared and
+   validated target.
+
+   Return real typed results when the Bot API proves them. Represent timeout
+   after possible acceptance as `outcome_unknown`; do not fabricate message IDs
+   or report success merely because a request was serialized.
+
+7. Implement command exposure as explicit metadata, not implicit publication of
+   every userbot command. Add a versioned declaration such as `ControlCommand`
+   or an equivalent additive field containing, at minimum:
+   - command name and aliases;
+   - description and help visibility;
+   - allowed surfaces: inline, private chat, or both;
+   - actor policy: owner-only by default, explicit user allow-list, or a
+     narrowly defined chat policy;
+   - read-only versus mutating classification;
+   - confirmation requirement and confirmation timeout;
+   - whether query-time execution is allowed, with mutating commands forbidden
+     from executing merely while the user is typing;
+   - maximum argument/query length and bounded state requirements;
+   - response mode: inline result, bot message, callback flow, or explicit
+     user-session action result;
+   - required capabilities and permissions.
+
+   Registration must reject duplicate names, aliases, unsafe exposure of core
+   commands, undeclared capabilities, invalid policies, over-limit state,
+   protected namespaces, and conflicts with existing inline handlers. A plugin
+   must not expose a command by sending handcrafted metadata after activation.
+   Registration and unregistration must be atomic across Go plugins, Python
+   sidecars, package install/load, restart, unload, rollback, and uninstall.
+
+8. Preserve and integrate existing inline handlers. Existing inline query
+   handlers, callback handlers, forms, lists, galleries, and dynamic callback
+   routes must continue to work through the new Bot API backend. Do not force
+   existing plugins to become control commands.
+
+   Complete the inline manager/backend integration for:
+   - inline query answers with bounded result types and up to the configured
+     Bot API limit;
+   - article, media, and other result types that the protocol explicitly
+     supports;
+   - result-level and message-level inline keyboards;
+   - callback, URL, and switch-inline buttons;
+   - forms, paged lists, galleries, edit, delete, close, and unload behavior;
+   - input prompts only where the Bot API flow can represent them safely;
+   - opaque callback IDs/data mapped to plugin handlers;
+   - callback TTL, owner/allow-list checks, plugin/account binding, and cleanup;
+   - `inline_message_id` editing for results inserted into other chats;
+   - cache time, personal-result behavior, and next-offset semantics.
+
+   The existing bounded unit registry and callback state must remain bounded,
+   expire on schedule, and be released on plugin unload, sidecar crash,
+   restart, bot detach, token rotation, account shutdown, and daemon shutdown.
+   Do not create one timer or goroutine per callback or inline result.
+
+9. Implement the control-command dispatch path:
+   - normalize `/command`, `/command@bot_username`, and inline query syntax;
+   - match only commands explicitly exposed for the corresponding surface;
+   - authenticate the Bot API actor using the verified update source and sender
+     identity, never by trusting user-provided text;
+   - apply owner/allow-list, chat, command, plugin, capability, and permission
+     checks before enqueue;
+   - use a separate bounded control-bot ingress lane so bot traffic cannot
+     starve ordinary owner commands, while preserving global resource limits;
+   - route through the existing per-plugin executor and supervisor lifecycle;
+   - preserve at-most-once event dispatch and explicit overload behavior;
+   - attach a typed invocation context so plugins can distinguish bot UI output
+     from user-session mutations;
+   - apply separate but bounded per-actor, per-command, per-bot, and global
+     rate-limit buckets without unbounded labels or maps;
+   - enforce a short answer deadline for inline queries and callback answers;
+   - return a safe busy, expired, unauthorized, unsupported, or failed result
+     through the Bot API when the event cannot be queued or completed.
+
+   Do not inject a synthetic user-session message and do not relax the ordinary
+   parser's owner check. Do not run the same command twice through both the bot
+   and user-session paths for one update.
+
+10. Design safe multi-step control flows:
+   - every flow has a bounded opaque ID, owner/plugin/account binding, actor
+     binding, creation time, idle timeout, absolute TTL, maximum steps, and
+     maximum state bytes;
+   - state is stored in a bounded core-owned or namespaced plugin store;
+   - confirmation tokens are single-use, scoped, expiring, and cannot be
+     guessed from message IDs or callback data;
+   - callback presses from a different user, chat, bot, or plugin are rejected;
+   - replayed callback updates are handled idempotently or rejected explicitly;
+   - state is cleaned on completion, cancellation, timeout, restart, unload,
+     detach, and account shutdown;
+   - sensitive arguments and state are redacted from logs and diagnostics;
+   - a plugin cannot create an unbounded FSM, detached background task, or
+     hidden retry loop.
+
+   Provide a typed SDK abstraction for forms/menus/confirmations where useful,
+   but do not require plugins to manipulate callback-data encoding manually.
+
+11. Implement Bot API markup and result validation. Support only explicitly
+   modeled, bounded fields. Validate:
+   - result IDs, types, titles, descriptions, message text, captions, parse
+     modes, and media references;
+   - row and button counts, button text, callback data, URLs, and switch-inline
+     query lengths;
+   - mutually exclusive button targets;
+   - inline-message and bot-message target ownership;
+   - media size/type/URL policy and bounded download/attachment behavior;
+   - HTML/Markdown/entity handling without accepting unsafe or ambiguous input;
+   - cache and pagination fields;
+   - total serialized payload and response-frame size.
+
+   Return stable structured validation errors. Never pass arbitrary JSON
+   directly to the Bot API and never claim that a result was sent when the
+   adapter rejected it.
+
+12. Implement capability and permission enforcement at every boundary. Define
+   least-privilege capabilities and permissions, for example:
+   - capability: `control_bot`;
+   - capability: `control_bot.inline`;
+   - capability: `control_bot.callbacks`;
+   - permission: `telegram.bot.read_ui`;
+   - permission: `telegram.bot.write_ui`;
+   - permission: `telegram.bot.execute_commands`;
+   - existing, separate permissions for user-session Telegram mutations;
+   - existing inline/media/storage permissions as applicable.
+
+   The exact names may follow repository conventions, but the distinction must
+   be real. Enforce declarations during package verification, activation,
+   metadata registration, reverse RPC, command routing, flow creation, and
+   immediately before every Bot API or user-session action. A plugin cannot
+   gain bot access by constructing a raw protocol frame or by reusing a
+   user-session permission.
+
+13. Add idempotency and duplicate-update handling:
+   - persist or safely track Bot API update offsets according to a documented
+     crash/restart policy;
+   - distinguish transport redelivery from a new callback/query;
+   - scope idempotency keys by bot, account, plugin, actor, operation, and
+     bounded retention window;
+   - do not repeat a user-session mutation after an ambiguous control-bot
+     request unless the operation explicitly supports safe idempotency;
+   - define restart, eviction, detach, and storage-failure behavior;
+   - keep offset, flow, callback, and result state bounded and account-scoped.
+
+   Do not pretend Bot API polling, plugin dispatch, and user-session Telegram
+   mutations form one transaction. Document partial states and recovery.
+
+14. Extend Go and Python SDKs with equivalent typed APIs:
+   - control invocation context and source metadata;
+   - bot message send/edit/delete and callback answer helpers;
+   - inline query answer helpers and bounded result builders;
+   - inline keyboard/button builders with validation before dispatch;
+   - forms, paginated lists, galleries, confirmations, and flow state helpers;
+   - explicit user-session client/action helpers for account mutations;
+   - typed action results and structured exceptions/errors;
+   - context/async cancellation, deadlines, retryability, and outcome-unknown;
+   - no Bot API client object, raw Telegram object, token, socket, or arbitrary
+     network method exposed to plugin code.
+
+   Keep compatibility where possible. For an unsupported operation, fail with
+   an actionable stable error identifying the operation and supported
+   replacement. Add Go and Python examples showing:
+   - a read-only `@bot search` command returning a result list;
+   - a confirmation flow that invokes a permitted user-session action only
+     after a button press;
+   - a paged form/list with callback authorization and TTL;
+   - an existing inline handler continuing to work unchanged.
+
+15. Implement Python sidecar and Go supervisor support. Ensure:
+   - metadata declarations are normalized identically in both runtimes;
+   - control events are delivered through the existing authenticated RPC;
+   - reverse calls for Bot API actions are correlated, bounded, cancellable,
+     deadline-aware, and cleaned after disconnect;
+   - sidecar restarts unregister stale command, flow, and callback state;
+   - plugin code cannot open a second control channel or access the token;
+   - handler timeout, queue overload, malformed response, and process death
+     return stable errors;
+   - no registration becomes visible before plugin activation succeeds.
+
+16. Implement core lifecycle and operational behavior:
+   - bot transport starts only after token verification and account identity
+     readiness;
+   - bot transport starts/stops in a deterministic order relative to plugins,
+     inline manager, user-session transport, and executor workers;
+   - commands are unavailable while the bot is stopped or degraded;
+   - status/diagnostics expose state, bot ID/username as permitted, polling
+     offset health, last error category, queue depth, active flows, and restart
+     count without secrets or unbounded data;
+   - plugin load/unload and package rollback reconcile control declarations
+     atomically;
+   - bot detach/rotation invalidates all live callback and flow state;
+   - shutdown waits for polling, Bot API requests, control events, plugin
+     workers, pending reverse RPC, callbacks, flows, and temporary media;
+   - no goroutine, process, timer, socket, file, secret, or waiter leaks after
+     failure or normal shutdown.
+
+17. Add bounded observability. Track, with fixed-cardinality labels only:
+   - bot attach/verify/start/stop/rotate/detach state;
+   - polling requests, updates received, duplicates, malformed updates,
+     conflicts, reconnects, flood waits, timeouts, and Bot API error classes;
+   - control commands matched, authorized, rejected, queued, overloaded,
+     timed out, completed, failed, and outcome-unknown;
+   - inline queries, callbacks, answer latency, callback expiry, flow creation,
+     flow completion, flow expiry, and state cleanup;
+   - action channel, operation class, queue delay, response status, and cleanup;
+   - plugin/runtime health and bounded resource usage.
+
+   Never use tokens, raw update IDs, callback data, query strings, message IDs,
+   chat IDs, usernames, message text, URLs, media handles, flow IDs, or
+   arbitrary plugin input as unbounded metric labels. Redact these values in
+   logs and cap diagnostic samples.
+
+18. Add deterministic fake Bot API and recorded fixtures. The fake transport
+   must model:
+   - getMe and token validation;
+   - long-poll offset behavior and duplicate/redelivered updates;
+   - private bot commands, inline queries, callback queries, inline-message
+     callbacks, chosen results if supported, and malformed updates;
+   - answer, send, edit, delete, inline-result, and callback operations;
+   - unauthorized token, getUpdates conflict, timeout, flood wait, rate limit,
+     malformed response, network disconnect, and partial mutation outcomes;
+   - bounded payload and collection rejection;
+   - restart, detach, rotation, plugin crash, flow expiry, and cleanup.
+
+   Recorded mode must stay credential-free, deterministic, and network-free.
+   Do not mark a live Bot API capability verified from a recorded fixture alone.
+
+19. Add an opt-in live Bot API smoke test or command. It must be impossible to
+   run during ordinary tests, CI, package verification, or builds. Require an
+   explicit gate such as `SERENOX_LIVE_BOT=1` and short-lived environment
+   inputs for the token and safe target user/chat. Never commit tokens, bot
+   usernames, private IDs, message text, or live update payloads.
+
+   The smoke path must:
+   - validate inputs before contacting Telegram;
+   - call getMe and verify the configured bot identity;
+   - verify inline mode is enabled or report actionable setup instructions;
+   - receive a unique bounded test command/inline query;
+   - return and select a test inline result where the environment supports it;
+   - exercise callback answer and one edit/delete operation;
+   - test a private bot command only when explicitly configured;
+   - clean up test messages, flows, callbacks, offsets, and temporary state;
+   - redact all secrets and avoid printing user data;
+   - report skipped/unsupported operations distinctly from failures.
+
+   Include a dry-run/input-validation mode that performs no Telegram mutation.
+   If no safe credentials or target are available, leave the gated test
+   runnable but skipped and keep live verification marked incomplete.
+
+20. Update only necessary documentation:
+   - `README.md` with the product-level control-bot capability and boundaries;
+   - `docs/architecture.md` with transport ownership and response channels;
+   - `docs/setup.md` and `docs/authentication.md` with BotFather, token
+     attachment, inline-mode setup, storage, rotation, and redaction;
+   - `docs/operations.md` with polling conflicts, reconnects, offsets, limits,
+     diagnostics, backup/restore, and shutdown behavior;
+   - `docs/plugin-development.md`, `docs/go-plugins.md`, and
+     `docs/python-plugins.md` with exposure declarations and complete examples;
+   - `docs/action-results.md` with bot/user-session channel and ambiguity rules;
+   - `docs/compatibility.md` with verified, partial, live-verified, and
+     unsupported Bot API surfaces;
+   - `docs/milestones.md` only if the repository has milestone tracking.
+
+   Document exact command syntax, permissions, actor policy, callback/flow
+   TTLs, payload and rate limits, offset semantics, retry/idempotency behavior,
+   token lifecycle, webhook status, supported result types, and every known
+   Telegram incompatibility. Do not claim full Telegram Bot API or Hikka
+   compatibility.
+
+21. Profile only after correctness and failure tests exist. Measure inline
+   query latency, callback answer latency, command queue delay, Bot API polling
+   overhead, DTO conversion, markup validation, flow-state access, JSON frame
+   sizes, restart cleanup, and memory stability. Fix measured regressions
+   without removing resource limits. Pay particular attention to duplicate
+   serialization, timer cleanup, polling backoff, callback lookup, and stale
+   state after plugin restart.
+
+TESTING
+Add protocol golden, malformed-input, oversized-payload, permission, metadata,
+command-exposure, actor-authentication, callback, inline-result, flow-state,
+idempotency, offset, and structured-error tests.
+
+Add Go tests for:
+
+- token attach/verify/rotation/detach and restrictive atomic persistence;
+- Bot API request construction, response validation, polling offsets,
+  reconnect/backoff, conflicts, unauthorized tokens, flood waits, cancellation,
+  and shutdown;
+- inline query and callback conversion, `inline_message_id`, chat instances,
+  private bot commands, command mentions, and malformed updates;
+- control-command registration conflicts, aliases, policy validation, command
+  routing, owner/allow-list checks, chat scope, and permission boundaries;
+- separate user-session versus Bot API response channels;
+- inline result, markup, media, pagination, callback-data, and frame limits;
+- callback authorization, flow binding, confirmation replay, TTL, cleanup,
+  plugin unload, sidecar crash, bot rotation, and account shutdown;
+- separate control ingress capacity, executor backpressure, timeouts,
+  per-actor/per-command limits, and bounded metrics;
+- action results, idempotency, duplicate updates, ambiguous outcomes, and
+  no-duplicate user-session mutations;
+- no leaked goroutines, timers, sockets, files, temporary media, secrets,
+  pending RPC waiters, or stale registrations.
+
+Add supervised local-socket end-to-end tests for both Go and Python plugins.
+Add recorded-update fixtures for the complete flow from inline query or bot
+message through plugin dispatch and Bot API response. Add fake-live tests for
+the adapter. Add race tests, overload tests, restart tests, and cleanup tests.
+
+Run at minimum:
+
+```text
+make fmt-check
+make lint
+make test
+make test-race
+make build
+go test -run '^$' -bench . -benchmem ./...
+```
+
+Run the live Bot API smoke test separately and only with an authorized test
+bot and safe target. Report the exact command, whether it was skipped or run,
+which operations succeeded, which remain unsupported, and whether all test
+state was cleaned. Never include secret values in the report.
+
+ACCEPTANCE CRITERIA
+1. A verified bot token can be attached, persisted securely, rotated, detached,
+   and started without leaking the token or replacing a working bot on failed
+   verification.
+2. Long polling is bounded, cancellable, reconnecting, offset-aware, and does
+   not starve ordinary user-session commands or watchers.
+3. A plugin can explicitly expose a command through `@bot query`, private bot
+   chat, or both, while non-exposed commands remain unavailable through the
+   bot.
+4. Inline queries return bounded, validated results with inline keyboards and
+   callback buttons. Callback answers and inline-message edits work through
+   typed DTOs, including `inline_message_id` where applicable.
+5. Existing inline handlers, forms, lists, galleries, callback routes, and
+   command behavior remain compatible unless a documented migration is needed.
+6. Bot UI actions and user-session Telegram mutations use separate explicit
+   response channels and permissions. A bot event never bypasses the ordinary
+   owner-command security model.
+7. Owner/allow-list, plugin/account binding, flow binding, callback TTL,
+   confirmation, rate limits, deadlines, and idempotency are enforced in the
+   core before every relevant operation.
+8. Go and Python plugins have equivalent typed APIs without raw Telegram
+   objects, Bot API clients, tokens, sockets, or arbitrary method dispatch.
+9. Recorded, fake-live, supervised Go/Python, and opt-in live fixtures cover
+   every claimed behavior. Live verification is clearly separated from
+   credential-free verification.
+10. Bot polling, callbacks, flows, inline units, queues, frames, actions,
+    metrics, temporary media, RPC waiters, and secrets remain bounded and are
+    cleaned on timeout, crash, restart, unload, detach, rotation, and shutdown.
+11. No action reports fabricated success or fabricated message IDs. Ambiguous
+    Bot API or user-session mutations are represented explicitly.
+12. Documentation and compatibility matrices accurately list implemented,
+    live-verified, partial, unsupported, and intentionally out-of-scope
+    surfaces.
+
+DELIVERABLE
+Implement the complete control-bot transport, protocol, core routing, Bot API
+adapter, inline manager integration, actions/results, permissions, lifecycle,
+Go SDK, Python SDK/sidecar, CLI/configuration, tests, fixtures, examples,
+benchmarks, and necessary documentation. Report changed files, command
+exposure metadata, DTOs and operation names, permission names, exact limits,
+polling/offset semantics, flow and callback TTLs, idempotency behavior,
+user-session versus Bot API action mapping, live-versus-recorded verification,
+unsupported operations, cleanup guarantees, and every verification command.

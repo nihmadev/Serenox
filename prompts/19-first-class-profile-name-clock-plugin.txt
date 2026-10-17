@@ -1,0 +1,269 @@
+TASK: Implement a safe profile-name clock plugin for Serenox.
+
+Repository: /home/nihmadev/Serenox
+
+Read the current protocol v1 actions and validators, Telegram transport and
+live gotd adapter, recorded transport, App action execution, plugin
+permissions, package manifests, jobs API, storage API, supervisor lifecycle,
+Go SDK, Python SDK/sidecar, configuration, observability, compatibility
+matrix, and all related tests before editing. Preserve existing user changes.
+Do not rewrite unrelated components. Do not expose gotd, Pyrogram, Telethon,
+Bot API, raw TL objects, session data, or arbitrary Telegram method dispatch
+across the plugin boundary.
+
+PRODUCT INTENT
+Serenox should support small, useful userbot plugins that can update a
+bounded part of the account profile through an explicit, least-privilege
+interface. This task adds a clock plugin which preserves the user's original
+display name, appends a separator and the current local time, and refreshes
+the displayed time once per minute:
+
+```text
+Original name: Alice
+Displayed name: Alice | 14:37
+Next minute:   Alice | 14:38
+```
+
+The plugin must restore the original profile name when it is disabled,
+unloaded, restarted, or otherwise loses ownership of the profile update
+lease. It must not continuously create detached goroutines or silently
+overwrite a name changed by the user or another authorized component.
+
+OBJECTIVE
+Add a first-class typed profile-name mutation and implement an example
+`profile.clock` plugin for Go and/or Python using the existing plugin runtime.
+The feature must be bounded, restart-safe, permission-controlled, explicit
+about time zones and formatting, and honest about Telegram's sequential
+mutation and ambiguous-outcome behavior.
+
+REQUIRED WORK
+1. Establish the current boundary before changing it.
+
+   Trace and document the existing path from a plugin request through SDK,
+   reverse RPC, permission checks, App action application, Telegram
+   transport, live gotd adapter, recorded transport, and shutdown. Confirm
+   that profile mutations are currently unsupported rather than inferring
+   support from DTOs or the generic `ClientOperation` shape. Identify the
+   existing typed profile-read fields, if any.
+
+2. Define the profile ownership model.
+
+   Add a core-owned, account-scoped profile update lease or equivalent
+   ownership record. At most one active plugin may control the display-name
+   fields for an account unless the core explicitly serializes compatible
+   writers. The owner must be identified by plugin ID, account ID, and a
+   generation/lease token. A stale plugin, old generation, duplicate request,
+   or plugin without the declared permission must fail closed.
+
+   Decide and document what happens when:
+
+   - the user changes the name outside Serenox;
+   - the daemon restarts;
+   - the plugin is unloaded or crashes;
+   - the account session disconnects;
+   - another profile writer requests the lease;
+   - Telegram accepts a mutation but the response is lost.
+
+   Never restore a stale name over a newer user change without an explicit
+   ownership check. Do not claim that Telegram profile updates are
+   transactional or exactly-once.
+
+3. Add an explicit typed profile action.
+
+   Prefer an additive protocol v1 operation if it can remain compatible. Add
+   a narrowly defined action such as `profile_update_name` or an equivalent
+   typed `ProfileUpdate` DTO with exact fields for:
+
+   - first name and optional last name, or a clearly documented single
+     display-name mapping;
+   - profile ownership generation/lease identity;
+   - idempotency key;
+   - response channel/account scope;
+   - whether the request is an acquire, update, or restore operation.
+
+   Do not use `ClientOperation.Value` as a hidden JSON escape hatch. Do not
+   expose arbitrary `account.*` or `invoke` method names. Validate UTF-8,
+   Telegram name limits, empty-name behavior, separator length, and total
+   serialized size. Return a typed result containing the confirmed bounded
+   profile fields when Telegram proves them, otherwise return
+   `outcome_unknown` with a stable error.
+
+4. Implement the live Telegram mapping.
+
+   Map the typed action to Telegram's MTProto `account.updateProfile`, using
+   the installed gotd version and the existing authenticated user session.
+   Keep the gotd request and response entirely inside `internal/telegram`.
+   Add stable error mapping for invalid first name, about/name limits,
+   flood-wait/rate-limit, authorization failure, disconnect, timeout,
+   permission failure, and ambiguous acceptance. Do not retry a profile
+   mutation automatically after an ambiguous response.
+
+   Confirm whether the adapter can safely preserve first name and last name
+   independently. If Telegram's display-name semantics require a different
+   mapping, document it and keep the plugin API transport-neutral.
+
+5. Add capability and package permission enforcement.
+
+   Introduce a least-privilege capability/permission such as
+   `profile.write` or `telegram.profile.write`. It must be enforced during
+   manifest validation, installation/activation, metadata registration,
+   reverse RPC admission, action validation, and immediately before the live
+   adapter call. Existing message-send or read-client permissions must not
+   imply profile-write permission.
+
+   Ensure the permission cannot be smuggled through a generic client action,
+   malformed JSON, a forged lease token, or a package metadata omission.
+
+6. Implement scheduling without unbounded plugin timers.
+
+   Prefer the existing typed jobs API for a durable one-minute interval if it
+   can invoke the plugin with bounded overlap and cancellation. Otherwise add
+   the smallest host-supported lifecycle mechanism needed for a recurring
+   plugin callback. Do not create one detached goroutine or timer per update.
+
+   Define:
+
+   - interval semantics and whether the first update happens immediately;
+   - timezone source and default;
+   - daylight-saving behavior and clock rollback behavior;
+   - maximum execution time and overlap policy;
+   - missed-tick behavior after downtime;
+   - cleanup of the schedule on disable, unload, uninstall, account shutdown,
+     and daemon shutdown.
+
+   The displayed format must be configurable only within a bounded contract,
+   defaulting to 24-hour `HH:MM`. Use the configured account timezone or an
+   explicit plugin setting; never silently depend on the host machine timezone.
+
+7. Implement the example `profile.clock` plugin.
+
+   Provide a minimal, packageable example in the runtime that is already the
+   preferred path for this repository. It must:
+
+   - expose explicit enable/disable/status commands or an equivalent typed
+     control surface;
+   - capture and persist the original first/last name only after reading the
+     current account identity through a typed API;
+   - acquire the profile lease before the first mutation;
+   - format `original_first_name + " | " + HH:MM` without repeated separators;
+   - update at most once per minute and skip a duplicate formatted value;
+   - use the configured timezone and document UTC/default behavior;
+   - restore the original name on disable and release the lease;
+   - handle restart, duplicate jobs, stale leases, cancellation, and
+     outcome-unknown results without blind retries;
+   - avoid raw Telegram imports, local shell commands, arbitrary sockets, and
+     unbounded external APIs.
+
+   The plugin must preserve names containing an existing `|` by storing the
+   original structured fields rather than attempting lossy string parsing.
+   Bound the stored state and make it account/plugin-namespaced.
+
+8. Extend Go and Python SDKs consistently.
+
+   Add typed helpers for acquiring/releasing the profile lease, updating the
+   display name, reading the bounded current identity, and inspecting the
+   action result. Expose stable exceptions/errors for permission denied,
+   unsupported, lease conflict, invalid profile name, flood wait, timeout,
+   and outcome unknown. Do not expose the Telegram library or raw response.
+
+   If only one SDK can be implemented in the first vertical slice, document
+   the boundary clearly and add the other SDK's explicit unsupported result;
+   do not present an unimplemented facade as working.
+
+9. Add recorded and fake-live coverage.
+
+   Recorded mode must remain deterministic and credential-free. Add fixtures
+   and tests for:
+
+   - identity read and original-name capture;
+   - successful first-name update and returned profile DTO;
+   - unchanged formatted value being skipped;
+   - invalid/empty/oversized names;
+   - missing permission and conflicting lease;
+   - duplicate idempotency key and stale generation;
+   - flood wait, disconnect, timeout, and timeout-after-acceptance;
+   - disable/restore and cleanup after plugin unload or daemon shutdown;
+   - timezone formatting around midnight and DST where the selected timezone
+     library supports deterministic test clocks;
+   - plugin restart and missed interval behavior;
+   - concurrent enable/disable/update requests.
+
+   Recorded success must not be described as live Telegram verification.
+   Add a separately gated live smoke test only if credentials and cleanup can
+   be handled safely, and restore the original profile name in a finally-like
+   cleanup path.
+
+10. Add bounded observability and diagnostics.
+
+   Track operation type, result state, permission rejection, lease conflict,
+   skipped-equal-value update, flood wait, outcome unknown, schedule lag,
+   and cleanup failure with bounded labels. Never use plugin-controlled names,
+   usernames, account IDs, action IDs, lease tokens, message text, or time
+   strings as metric labels or log fields. Redact profile names from ordinary
+   logs and diagnostics.
+
+11. Document the exact contract.
+
+   Update only the necessary protocol, plugin-development, permissions,
+   jobs/scheduling, operations, and compatibility documentation. Explain:
+
+   - the profile action and result DTOs;
+   - the `telegram.profile.write` permission;
+   - lease ownership and conflict behavior;
+   - the default `Name | HH:MM` format;
+   - timezone and DST behavior;
+   - update cadence and Telegram rate-limit considerations;
+   - restore/cleanup guarantees and their limits;
+   - ambiguous outcome handling;
+   - recorded versus live verification;
+   - how to install, enable, disable, and remove `profile.clock`.
+
+   Do not claim that Telegram exposes a native music/now-playing profile
+   field. This feature writes ordinary profile name fields only.
+
+TESTING
+Add protocol validation and golden tests, manifest/capability/permission
+tests, lease isolation and generation tests, idempotency tests, deterministic
+clock/timezone tests, job overlap and cleanup tests, recorded transport tests,
+fake gotd adapter tests, supervised Go/Python SDK tests as applicable, and
+restart/shutdown tests. Verify that all existing commands, watchers, client
+reads, message actions, media, control bot, jobs, storage, and plugin
+lifecycle behavior remain compatible.
+
+Run at minimum:
+
+```text
+make fmt-check
+make lint
+make test
+make test-race
+make build
+go test -run '^$' -bench . -benchmem ./...
+```
+
+ACCEPTANCE CRITERIA
+1. A permitted plugin can update the account's profile name through an
+   explicit typed action that maps to `account.updateProfile`.
+2. `profile.clock` displays `original name | HH:MM`, refreshes no more than
+   once per minute, and uses an explicit timezone.
+3. The original structured name is preserved and restored on disable and
+   normal lifecycle cleanup; stale plugins cannot overwrite newer ownership.
+4. No generic Telegram method dispatch, raw Telegram object, session value,
+   or arbitrary plugin socket crosses the boundary.
+5. Permission, lease, idempotency, limits, cancellation, flood wait, and
+   outcome-unknown semantics are validated and tested.
+6. Recorded/fake-live tests prove the implementation without credentials;
+   any live smoke test is separately gated and restores the original name.
+7. Plugin unload, restart, account shutdown, and daemon shutdown release
+   schedules and ownership state without unbounded timers or goroutines.
+8. Documentation accurately distinguishes verified, partial, live-gated, and
+   unsupported behavior.
+
+DELIVERABLE
+Implement the typed profile mutation, core permission and lease boundary,
+live/recorded adapters, scheduling integration, SDK support, example
+`profile.clock` plugin, tests, and necessary documentation. Report changed
+files, exact DTO/action names, permission and lease rules, timezone/cadence
+semantics, cleanup guarantees, ambiguous-outcome behavior, live-versus-
+recorded verification status, unsupported cases, and all verification
+commands.

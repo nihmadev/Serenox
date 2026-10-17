@@ -1,0 +1,23 @@
+{
+  "format": "serenox.plugin.package/v1",
+  "id": "example.jobs",
+  "name": "Jobs Lab",
+  "version": "1.0.0",
+  "description": "Interactive bounded Jobs API smoke-test plugin",
+  "category": "python-sidecar",
+  "protocol": {"min": "1.0", "max_exclusive": "2.0"},
+  "core": {"min": "0.1.0", "max_exclusive": "1.0.0"},
+  "sdk": {"min": "0.1.0", "max_exclusive": "1.0.0"},
+  "sidecar": {"min": "0.1.0", "max_exclusive": "1.0.0"},
+  "entrypoints": [{"os": "any", "arch": "any", "path": "plugin.py", "module": "plugin.py", "class": "JobsLab"}],
+  "capabilities": ["commands", "jobs", "storage", "client_operations"],
+  "permissions": ["telegram.reply", "jobs.schedule", "storage.read", "storage.write", "client.send_message"],
+  "resources": {
+    "max_jobs": 32,
+    "max_job_payload_bytes": 16384,
+    "max_job_runtime_ms": 10000,
+    "storage_entries": 512,
+    "storage_value_bytes": 65536
+  },
+  "files": []
+}

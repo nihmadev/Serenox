@@ -1,0 +1,16 @@
+{
+  "format": "serenox.plugin.package/v1",
+  "id": "example.uwu",
+  "name": "UwU formatter",
+  "version": "1.2.0",
+  "description": "Meme-style UwU formatter with an owner-controlled mode",
+  "category": "python-sidecar",
+  "protocol": {"min": "1.0", "max_exclusive": "2.0"},
+  "core": {"min": "0.1.0", "max_exclusive": "1.0.0"},
+  "sdk": {"min": "0.1.0", "max_exclusive": "1.0.0"},
+  "sidecar": {"min": "0.1.0", "max_exclusive": "1.0.0"},
+  "entrypoints": [{"os": "any", "arch": "any", "path": "plugin.py", "module": "plugin.py", "class": "UwU"}],
+  "capabilities": ["commands", "pre_send"],
+  "permissions": ["telegram.reply"],
+  "files": []
+}

@@ -1,0 +1,59 @@
+{
+  "format": "serenox.plugin.package/v1",
+  "id": "example.autopilot",
+  "name": "Autopilot",
+  "version": "1.0.0",
+  "description": "Bounded durable workflow and recovery demonstration",
+  "category": "go-executable",
+  "protocol": {
+    "min": "1.0",
+    "max_exclusive": "2.0"
+  },
+  "core": {
+    "min": "0.1.0",
+    "max_exclusive": "1.0.0"
+  },
+  "entrypoints": [
+    {
+      "os": "linux",
+      "arch": "amd64",
+      "path": "bin/autopilot"
+    }
+  ],
+  "capabilities": [
+    "commands",
+    "control_bot",
+    "control_bot.callbacks",
+    "http",
+    "inline",
+    "jobs",
+    "storage",
+    "watchers"
+  ],
+  "permissions": [
+    "jobs.schedule",
+    "network.http.read",
+    "storage.read",
+    "storage.write",
+    "telegram.bot.write_ui",
+    "telegram.reply",
+    "telegram.send"
+  ],
+  "network": {
+    "origins": [
+      {
+        "scheme": "https",
+        "host": "example.com",
+        "name": "autopilot-demo-status"
+      }
+    ],
+    "max_request_bytes": 1024,
+    "max_response_bytes": 4096,
+    "max_redirects": 0,
+    "request_timeout_ms": 3000,
+    "max_concurrent": 1,
+    "requests_per_second": 0.2,
+    "burst": 1
+  },
+  "files": []
+}

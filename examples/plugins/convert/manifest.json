@@ -1,0 +1,14 @@
+{
+  "format": "serenox.plugin.package/v1",
+  "id": "example.convert",
+  "name": "Convert",
+  "version": "1.0.5",
+  "description": "Convert attached PNG/JPEG images with .convert source-target",
+  "category": "go-executable",
+  "protocol": {"min": "1.0", "max_exclusive": "2.0"},
+  "core": {"min": "0.1.0", "max_exclusive": "1.0.0"},
+  "entrypoints": [{"os": "linux", "arch": "amd64", "path": "bin/convert"}],
+  "capabilities": ["commands", "media_read", "media_write", "media_attach"],
+  "permissions": ["telegram.reply", "media.read", "media.write", "media.attach"],
+  "files": []
+}

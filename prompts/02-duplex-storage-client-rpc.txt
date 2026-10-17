@@ -1,0 +1,30 @@
+TASK: Implement production duplex RPC for durable storage and bounded Telegram client reads.
+
+Repository: /home/nihmadev/Serenox
+
+Inspect protocol v1, RPC client/server behavior, supervisor reverse RPC, App, storage package, permission checks, Python SDK, sidecar action sink, and tests before editing. Preserve existing user changes. Do not bypass the supervisor or expose concrete Telegram-library objects to plugins.
+
+OBJECTIVE
+Replace provisional and unsupported Python storage/client behavior with explicit typed request/response RPC. Implement durable plugin storage and a safe initial read-only Telegram client surface.
+
+REQUIRED WORK
+1. Define stable protocol DTOs for host storage requests/results and host client requests/results. Use typed fields, bounded collections, explicit operation names, request IDs, deadlines, and structured errors. Do not encode arbitrary JSON operations inside Action.Value.
+2. Implement duplex request correlation in both Go RPC and Python sidecar. Bound in-flight requests, response sizes, pending maps, request timeouts, and reverse-RPC concurrency. Handle cancellation and disconnect without leaked waiters.
+3. Implement host.storage operations: get, set, delete, list if justified, and atomic batch. Namespace all data by plugin identity and account identity. Enforce namespace, key, value, entry, total file, and batch limits.
+4. Connect host.storage to internal/storage.Store. Preserve transactional behavior, atomic file replacement, validation, and recovery semantics. Do not silently report success before durable commit unless the API explicitly names an asynchronous operation.
+5. Add SDK methods for synchronous and asynchronous storage access with clear durability semantics. Make storage.get return the real stored value, not a startup snapshot or provisional value. Preserve compatibility where possible and raise actionable errors where behavior cannot be supported.
+6. Implement the initial bounded host.client read surface: get_me, get_message, and resolve_peer. Add optional bounded history pagination only if the existing transport can support it without unbounded memory or network work.
+7. Return transport-neutral Message, Peer, and pagination DTOs. Never return Pyrogram, gotd, or other library objects across the socket.
+8. Enforce declared capabilities and permissions before every storage/client operation. Reject undeclared, forbidden, malformed, expired, or oversized requests with stable error codes.
+9. Define behavior for Telegram disconnects, missing peers, deleted messages, access failures, rate limits, and partial batch failures. Make atomicity explicit.
+10. Remove or update provisional-result paths that fake message IDs or values for APIs that now have real responses. Keep action-based writes only for operations that are intentionally asynchronous.
+11. Add metrics for request count, latency, timeout, rejection, overload, storage commit failure, and client failure with bounded labels.
+
+TESTING
+Add protocol golden tests and malformed input tests for every new DTO. Add Go tests for storage transactions, namespace isolation, limits, atomic batch behavior, durability failure, and concurrent access. Add RPC tests for multiplexing, deadlines, cancellation, disconnect, duplicate IDs, unknown IDs, and bounded in-flight requests. Add Python SDK and sidecar tests for real get/set/delete results and client reads. Add supervised end-to-end tests through the actual local socket and permission boundary. Run formatting, linting, all tests, race tests, compile checks, and builds.
+
+ACCEPTANCE CRITERIA
+Python storage survives sidecar restart and returns real persisted values. Client reads work through a typed bounded duplex RPC. No raw Telegram object crosses the boundary. All requests have deadlines and hard limits. Concurrent requests cannot grow memory without bound. Existing action delivery and plugin restart behavior remain compatible.
+
+DELIVERABLE
+Implement code, tests, protocol documentation, and compatibility updates. Report the exact DTOs, permissions, limits, durability guarantees, unsupported operations, and all verification commands.

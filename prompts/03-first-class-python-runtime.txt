@@ -1,0 +1,32 @@
+TASK: Make the Python sidecar a first-class built-in Serenox runtime.
+
+Repository: /home/nihmadev/Serenox
+
+Read the package manager, .srnx manifest and installer, plugin runtime controller, supervisor, daemon control plane, Python sidecar, Python SDK, configuration, diagnostics, operations documentation, and tests. Preserve existing user changes. Keep Python isolated as a supervised child process; do not embed CPython into the Go daemon.
+
+OBJECTIVE
+Turn Python support from an optional experimental path into a stable, product-level runtime with identical install, load, update, restart, health, permission, and diagnostic behavior to native Go plugins.
+
+REQUIRED WORK
+1. Define the supported Python runtime contract: interpreter discovery, minimum version, sidecar version, SDK/protocol compatibility, platform support, and failure behavior. Validate it before install or activation.
+2. Make the .srnx manifest explicitly describe Python entrypoints, module/class selection, required SDK/protocol range, declared capabilities, permissions, resource limits, and optional dependency metadata. Reject ambiguous or unsafe manifests.
+3. Integrate Python packages into the normal pack, verify, install, list, load, update, rollback, unload, uninstall, restore, and control-plane workflows. Do not create a separate experimental code path.
+4. Make the supervisor own the complete Python lifecycle: authenticated socket setup, handshake, configure, start, health, dispatch, graceful stop, process-group cleanup, restart backoff, circuit breaker, stdout/stderr limits, and runtime directory cleanup.
+5. Ensure Python plugin registration is atomic. A plugin must not publish commands, watchers, inline handlers, callbacks, permissions, or metrics until the sidecar is ready and metadata is validated.
+6. Add explicit runtime diagnostics: interpreter path/version, sidecar version, SDK/protocol version, package version, process state, restart count, circuit state, queue depth, worker count, RSS where available, last error, and unsupported capability status.
+7. Expose consistent CLI and built-in command behavior for Go and Python plugins. Avoid user-visible wording that describes Python as experimental.
+8. Add safe configuration for Python executable, runtime limits, environment policy, dependency policy, and optional managed runtime location. Do not inherit unrestricted ambient environment variables or working directories.
+9. Define dependency handling. Prefer reproducible package metadata and a managed/shared runtime over arbitrary network installation during plugin startup. Never execute package setup code before verification and permission checks.
+10. Keep compatibility errors explicit and stable. Every unsupported SDK method must identify the API, reason, and supported replacement.
+11. Add upgrade and rollback guarantees. A failed Python update must restore the previous active package and, when applicable, the previous running process.
+12. Add resource policies for CPU-adjacent work, threads, action batches, storage, callbacks, frames, queue capacity, and handler timeouts. Ensure all background tasks are owned and cancelled.
+13. Update installation, operations, migration, plugin development, compatibility, and architecture documentation to describe Python as a supported runtime.
+
+TESTING
+Add manifest and package security tests, interpreter discovery tests, lifecycle state tests, authenticated socket tests, restart and circuit-breaker tests, rollback tests, process and socket cleanup tests, malformed RPC tests, timeout tests, environment isolation tests, and recorded end-to-end Python plugin fixtures. Verify command parity between Go and Python packages. Run formatting, linting, all Go tests, race tests, Python tests, compile checks, builds, and a clean install rehearsal.
+
+ACCEPTANCE CRITERIA
+A verified Python .srnx package can be installed, activated, inspected, restarted, updated, rolled back, unloaded, and restored using the same product workflows as a Go package. Sidecar failure never crashes the daemon. No plugin registration leaks after failed startup. Diagnostics expose actionable runtime state. The implementation remains process-isolated and bounded.
+
+DELIVERABLE
+Implement code, tests, CLI behavior, documentation, and compatibility updates. Report the runtime contract, package fields, security assumptions, resource limits, and verification results.

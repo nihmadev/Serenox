@@ -1,0 +1,362 @@
+TASK: Implement a bounded outbound HTTP/HTTPS client service for Serenox plugins.
+
+Repository: /home/nihmadev/Serenox
+
+Read the existing plugin protocol v1 DTOs, Go and Python RPC implementations,
+supervisor reverse RPC, package manifest and permission validation, configuration,
+observability, storage, media service, Telegram transport, Go SDK, Python SDK,
+sidecar action sink, plugin-development documentation, and all related tests
+before editing. Preserve existing user changes. Do not rewrite unrelated
+components. Do not expose concrete Telegram-library objects, raw sockets, or an
+unrestricted `net/http` client to plugins.
+
+SCOPE
+This task is for outbound requests from an isolated plugin to external HTTP and
+HTTPS services. It is not an inbound webhook server, public callback listener,
+Telegram Bot API client, arbitrary TCP API, proxy service, or shell/network
+namespace escape. A future inbound webhook feature must use a separate reviewed
+design and must not be smuggled into this client service.
+
+OBJECTIVE
+Add a first-class, transport-neutral, permission-controlled HTTP service owned by
+the Serenox core. Go and Python plugins must be able to call approved external
+web APIs, including a weather API, through bounded typed host RPC. The core must
+own URL validation, DNS and connection policy, TLS behavior, request and response
+limits, timeouts, concurrency, rate limiting, cancellation, redaction, and
+observability. A plugin must never receive direct access to sockets, environment
+proxy settings, arbitrary filesystem paths, or an unbounded HTTP client.
+
+The resulting surface should make a useful weather plugin possible without
+weakening the process-isolation and resource-bounded design:
+
+```text
+Python/Go plugin
+        │ typed host.http reverse RPC
+        ▼
+Serenox HTTP service
+        │ validated HTTP/HTTPS request
+        ▼
+approved external API
+```
+
+REQUIRED WORK
+1. Trace the current reverse-RPC path end to end: plugin SDK call, Python
+   sidecar duplex request, Go supervisor request handling, App/service boundary,
+   package permissions, cancellation, response correlation, and disconnect
+   cleanup. Reuse the existing authenticated local connection and request
+   deadline model instead of opening a second plugin-controlled network channel.
+
+2. Define a versioned, transport-neutral HTTP contract. Add typed request and
+   response DTOs for at least:
+   - method, URL, bounded request headers, and bounded request body;
+   - response status, bounded response headers, final URL, and bounded body;
+   - request ID/deadline where the existing RPC envelope does not already provide
+     them;
+   - redirect count, elapsed time, and whether the response was truncated or
+     rejected;
+   - stable error categories for invalid URL, forbidden host, DNS failure,
+     connection failure, TLS failure, timeout, cancellation, redirect rejection,
+     request-size limit, response-size limit, overload, rate limit, and upstream
+     HTTP status.
+
+   Keep the contract independent of Go `http.Request`, `http.Response`, Python
+   `aiohttp`/`httpx` objects, Telegram types, and OS-specific socket types. Do not
+   encode an arbitrary serialized client object or arbitrary JSON operation inside
+   an Action field.
+
+3. Add explicit protocol methods and capability declarations for host HTTP
+   access. Prefer a method such as `host.http` and a capability such as `http`
+   or `http_client`; use a negotiated protocol version only if the existing v1
+   extension rules cannot safely carry the contract. Keep unknown methods and
+   unknown DTO fields fail-closed according to existing protocol policy.
+
+4. Define and enforce manifest permissions with least privilege. At minimum,
+   distinguish read-only HTTP access from request methods that can send data, for
+   example:
+   - capability: `http`;
+   - permission: `network.http.read` for GET/HEAD;
+   - permission: `network.http.write` for POST/PUT/PATCH/DELETE;
+   - optional explicit permission for cleartext `http`, if the design keeps HTTP
+     enabled rather than HTTPS-only by default.
+
+   A package must not advertise HTTP capability without the required permission.
+   Enforce permission checks during package validation, activation, metadata
+   reconciliation, and immediately before every request. Do not rely only on
+   plugin-declared metadata or on a sidecar-side check.
+
+5. Add per-plugin network policy to the verified package/configuration boundary.
+   Support an explicit allowlist of normalized hostnames or origins. Define:
+   - exact-host versus subdomain matching;
+   - port matching;
+   - whether redirects may cross origins;
+   - whether HTTP is allowed;
+   - maximum request and response bytes;
+   - maximum redirects;
+   - request timeout and connection/header/idle timeouts;
+   - maximum concurrent requests;
+   - requests per second and burst;
+   - optional total byte budget;
+   - whether cookies, authentication headers, and custom user agents are allowed.
+
+   Default to deny when no network policy is declared. Do not silently turn an
+   empty allowlist into unrestricted internet access. Reject wildcard policies
+   unless their exact semantics, review surface, and resource impact are
+   explicitly defined and tested.
+
+6. Implement the core HTTP service with defense-in-depth SSRF protection:
+   - accept only `http` and `https` schemes;
+   - reject empty, malformed, userinfo-bearing, fragment-bearing, or ambiguous
+     URLs unless a documented use case requires a field;
+   - normalize hostnames, ports, and trailing dots before policy matching;
+   - reject loopback, link-local, multicast, unspecified, private, reserved, and
+     metadata-service IP ranges for both IPv4 and IPv6;
+   - validate every resolved address before connecting;
+   - prevent DNS rebinding by connecting only to validated addresses or by
+     revalidating the address selected by the dialer;
+   - do not inherit `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, or `NO_PROXY` from
+     the daemon environment unless an explicit trusted-core configuration says
+     so;
+   - use normal certificate and hostname verification for HTTPS; never expose a
+     plugin option equivalent to `InsecureSkipVerify`;
+   - revalidate every redirect against scheme, origin, port, allowlist, and SSRF
+     rules;
+   - do not forward Authorization, Cookie, Set-Cookie, or other sensitive
+     headers across redirects unless explicitly and safely defined;
+   - cap response decompression and reject decompression bombs;
+   - prevent request smuggling through ambiguous content length, unsupported
+     transfer encoding, or conflicting framing.
+
+   The implementation may use a standard Go HTTP transport internally, but that
+   transport is core-owned, policy-wrapped, and never serialized or passed to a
+   plugin.
+
+7. Implement bounded request and response handling. Enforce limits before
+   allocation whenever possible and use streaming reads internally. At minimum:
+   - reject a declared Content-Length above the request limit;
+   - cap chunked or unknown-length request bodies while reading;
+   - cap response headers and header value lengths;
+   - read at most `max_response_bytes + 1` to detect overflow;
+   - reject or explicitly mark a response that exceeds the limit; never return a
+     partial body while claiming success without a documented `truncated` state;
+   - cap body encoding/decompression expansion;
+   - ensure all request and response buffers are released on timeout, cancellation,
+     plugin crash, restart, and connection close.
+
+   Do not add an unbounded convenience API such as `download_all()` or a body
+   type that can grow without a configured maximum. Large binary transfers must
+   use the existing bounded media API, not the HTTP JSON response path.
+
+8. Add bounded concurrency and rate limiting. Use the existing resource ownership
+   model where possible, but keep network admission separate from Telegram action
+   rate limits if their semantics differ. Enforce limits per plugin and, where
+   necessary, per approved host. Requests waiting for a slot must have a deadline
+   and bounded queue; rejected requests must return a stable retryable error.
+   Do not create a goroutine, timer, retry loop, or unbounded pending map per
+   request.
+
+9. Define retry semantics explicitly. Do not automatically retry POST, PUT, PATCH,
+   or DELETE requests. If retries are supported for idempotent GET/HEAD requests,
+   bound the attempt count, total deadline, backoff, and retryable status/error
+   set. Never retry after an ambiguous write unless the caller supplies an
+   idempotency key and the upstream contract is documented. Expose enough error
+   information for a plugin to distinguish an upstream 429/5xx from a local
+   policy rejection without leaking response secrets.
+
+10. Add optional bounded caching only if it is useful for the weather example and
+    can be implemented without weakening isolation. If added, define cache key
+    normalization, per-plugin ownership, maximum entries/bytes, TTL, eviction,
+    stale behavior, privacy, and invalidation. Do not cache Authorization-bearing
+    responses by default. A cache hit must still respect request permission and
+    response-size policy. Do not introduce an unbounded global URL cache.
+
+11. Extend the Go SDK with a typed HTTP client. It should support:
+    - context cancellation and request deadlines;
+    - bounded method, URL, headers, body, and response types;
+    - explicit request and response size limits;
+    - typed access to status and selected response headers;
+    - safe JSON decoding helpers that enforce a caller-provided maximum before
+      decoding;
+    - no access to the underlying `http.Client`, transport, connection, cookies,
+      filesystem paths, or arbitrary sockets.
+
+12. Extend the Python SDK and sidecar with an equivalent typed async API. Provide
+    an ergonomic method such as:
+
+    ```python
+    response = await self.http.request(
+        "GET",
+        "https://api.open-meteo.com/v1/forecast?...",
+        headers={"accept": "application/json"},
+        timeout=10,
+    )
+    data = response.json(max_bytes=256 * 1024)
+    ```
+
+    Make the API fail clearly when called from an unsupported lifecycle context,
+    after disconnect, without the required capability, or with a body/response
+    beyond the negotiated limits. Do not expose `aiohttp`, `httpx`, `requests`,
+    raw sockets, ambient proxy configuration, or arbitrary file uploads.
+
+13. Add a minimal weather example plugin, preferably with both a Python fixture
+    and a Go fixture if the SDK surfaces are intended to be equivalent. The
+    plugin should:
+    - implement a command such as `.weather <city>` or `.weather <lat> <lon>`;
+    - use a configurable approved weather API and endpoint rather than hardcoding
+      secrets or unrestricted URLs;
+    - resolve or validate the location input with bounded parsing;
+    - call the HTTP service with a read-only permission;
+    - validate status, content type, JSON size, required fields, and upstream
+      error payloads;
+    - format a concise Telegram-safe response with units and a timestamp;
+    - apply a per-user or per-chat cooldown without creating unbounded state;
+    - handle timeout, rate limit, DNS failure, forbidden host, invalid location,
+      malformed JSON, upstream error, cancellation, and plugin unload clearly;
+    - never log API response bodies, tokens, authorization headers, or precise
+      user location unless the user explicitly requested it.
+
+14. Add a safe configuration/secret path for APIs that require credentials. A
+    plugin must not put tokens in manifest URLs, command arguments, logs, or
+    durable storage by default. Define whether secrets are injected as typed
+    config values, core-owned provider credentials, or a separate secret store.
+    Redact secrets in config diagnostics, error details, crash output, metrics,
+    and plugin health responses. Do not send ambient daemon environment variables
+    to a plugin.
+
+15. Add observability with bounded labels. Track at least request count, latency,
+    queue delay, active requests, bytes sent/received, timeouts, cancellations,
+    DNS/connect/TLS failures, redirect rejections, policy rejections, SSRF
+    rejections, rate limits, overload, upstream status classes, cache hits if
+    implemented, and cleanup failures. Never use arbitrary URL, query string,
+    hostname, path, token, response body, user ID, chat ID, or request ID as an
+    unbounded metric label. Logs must redact query parameters and sensitive
+    headers and should log only a normalized policy identifier or approved-origin
+    name.
+
+16. Update the package, protocol, plugin-development, Go-plugin, Python-plugin,
+    operations, compatibility, and README documentation. Document:
+    - outbound-only scope;
+    - DTOs and reverse-RPC methods;
+    - capability and permission names;
+    - allowlist and redirect semantics;
+    - SSRF and DNS-rebinding protections;
+    - HTTP versus HTTPS behavior;
+    - request/response/concurrency/rate/timeout limits;
+    - retry and idempotency rules;
+    - secret handling and redaction;
+    - weather example setup;
+    - unsupported streaming, binary, cookie, proxy, and webhook behavior;
+    - exact compatibility and migration behavior for older plugins.
+
+17. Profile hot paths only after correctness exists. Measure URL validation,
+    allowlist matching, DNS policy checks, request admission, JSON framing,
+    response buffering, and weather-command latency. Fix measured regressions
+    without removing limits. Pay particular attention to duplicate JSON
+    serialization across sidecar and Go RPC, repeated hostname/IP validation,
+    per-request allocations, timer cleanup, and response body copying.
+
+TESTING
+Add protocol golden and malformed-input tests for every new DTO and error code.
+Add Go tests for:
+
+- URL parsing, normalization, scheme and port policy;
+- exact-origin and subdomain allowlists;
+- userinfo, fragments, malformed escapes, IDN/trailing-dot, and ambiguous URL
+  rejection;
+- IPv4/IPv6 loopback, private, link-local, multicast, reserved, and metadata
+  address rejection;
+- DNS rebinding and redirect revalidation;
+- proxy-environment isolation and HTTPS certificate verification;
+- request header/body limits and chunked/unknown-length bodies;
+- response header/body limits, content encoding, decompression expansion, and
+  truncated/oversized responses;
+- timeout, cancellation, disconnect, duplicate request ID, unknown response ID,
+  and pending-request cleanup;
+- per-plugin and per-host concurrency, rate limits, bounded admission queues,
+  retry semantics, and non-retry of ambiguous writes;
+- permission checks before every request and package capability/manifest parity;
+- secret and sensitive-header redaction;
+- optional cache ownership, TTL, byte/entry bounds, and authorization safety;
+- no leaked goroutines, timers, sockets, pending waiters, or buffers.
+
+Add supervised end-to-end tests through the actual local Go socket for both a Go
+plugin and a Python sidecar. Use an injectable fake transport or an in-process
+test server with a test-only resolver/dialer hook; do not weaken production SSRF
+checks merely to make localhost fixtures pass. Cover successful JSON GET,
+bounded POST where permitted, redirects, upstream 4xx/5xx/429, malformed JSON,
+timeouts, cancellation, overload, plugin restart, and daemon shutdown.
+
+Add Python SDK/sidecar tests for typed request serialization, real response values,
+JSON limits, error mapping, capability errors, cancellation, disconnect cleanup,
+and lifecycle restrictions. Add a weather fixture that uses a deterministic fake
+weather response and verifies formatting, cooldown, malformed data handling, and
+upstream failure handling.
+
+Add an opt-in live HTTP smoke test only if useful. Gate it behind an explicit
+environment variable such as `SERENOX_LIVE_HTTP=1`, require a configured approved
+origin, keep the request count and response size tiny, and never run it in normal
+CI, `make test`, package verification, or default builds. Do not require a public
+weather service for credential-free tests.
+
+Run at minimum:
+
+```text
+make fmt-check
+make lint
+make test
+make test-race
+make build
+go test -run '^$' -bench . -benchmem ./...
+SERENOX_SOAK=1 go test -run 'Soak|Resource' -count=1 ./...
+```
+
+Run the live HTTP smoke test separately, only with an explicitly approved safe
+origin. Report whether it was skipped or run, the status class observed, and
+whether all resources were cleaned. Never include credentials, full URLs with
+query tokens, response bodies, or user location in the report.
+
+ACCEPTANCE CRITERIA
+1. A verified Go or Python plugin can perform an approved bounded HTTP/HTTPS
+   request through typed host RPC without receiving a raw network client.
+2. Requests fail closed for missing capability/permission, malformed URLs,
+   disallowed origins, private or metadata IPs, unsafe redirects, oversized
+   bodies, expired deadlines, overload, and unsupported methods.
+3. HTTPS certificate and hostname verification remain enabled. Plugins cannot
+   disable TLS verification, inherit ambient proxy settings, open arbitrary
+   sockets, or reach local services through DNS rebinding or redirects.
+4. Request and response resources are bounded and cleaned after success, timeout,
+   cancellation, disconnect, plugin crash, restart, uninstall, and daemon
+   shutdown. No pending reverse-RPC waiter or timer remains.
+5. Go and Python SDK behavior, permissions, error categories, limits, and
+   lifecycle restrictions are equivalent at the protocol level.
+6. The weather example works against a deterministic fixture and handles API
+   failures, malformed data, cooldowns, cancellation, and invalid input without
+   leaking sensitive data or growing state without bound.
+7. Existing commands, watchers, storage, media, inline/callback routing,
+   lifecycle, package installation, rollback, restart, and Telegram behavior
+   remain compatible.
+8. Documentation and compatibility matrices accurately distinguish verified,
+   partial, opt-in live-tested, and unsupported network behavior.
+9. No credentials, response bodies, private network addresses, user locations,
+   or live service data are added to source control, fixtures, logs, metrics, or
+   benchmark artifacts.
+
+DELIVERABLE
+Implement the complete bounded HTTP/HTTPS service, protocol DTOs and reverse RPC,
+permissions and package policy, Go SDK, Python SDK/sidecar support, weather
+example, tests, benchmarks, observability, and necessary documentation updates.
+Report:
+
+- the final HTTP DTOs, RPC methods, capabilities, and permissions;
+- URL, DNS, TLS, redirect, proxy, request, response, timeout, concurrency, rate,
+  retry, and cache behavior;
+- SSRF and DNS-rebinding protections;
+- secret handling and redaction guarantees;
+- changed files;
+- exact verification commands and results;
+- live smoke-test status if present;
+- benchmark/soak results;
+- all remaining unsupported operations or migration requirements.
+
+Do not claim the HTTP service is complete if any request path bypasses the core
+policy, permits unrestricted network access, reports success after an incomplete
+response, leaks secrets, or leaves pending resources after cancellation.
